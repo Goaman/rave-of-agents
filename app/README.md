@@ -24,7 +24,11 @@ bun run start      # web UI  → http://localhost:4317
 bun run tui        # terminal UI (same backend; embeds a server if none is up)
 ```
 
-- `bun run dev` — web server with auto-restart on changes.
+- `bun run dev` — same as `start` (no file-watch auto-restart). The server
+  supervises long-lived agent sessions, so auto-restart is deliberately off:
+  a `--watch` reload tears down every live `query()` and often fails to rebind
+  the port, leaving the UI stuck "offline". Restart manually after editing
+  server code.
 - `PORT=8080 bun run start` — change the port (the TUI honours `PORT` too).
 
 The web UI: **+ new agent** → task → launch; type in the composer (⌘/Ctrl+Enter)

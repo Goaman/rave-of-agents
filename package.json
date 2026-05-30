@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run app/server.ts",
-    "dev": "bun run --watch app/server.ts",
+    "dev": "bun run app/server.ts",
     "tui": "bun run app/tui.ts"
   },
   "dependencies": {

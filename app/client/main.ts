@@ -45,7 +45,11 @@ function AttachButton(picker: Picker) {
 
 // A strip of thumbnails for the currently-attached images, each removable.
 function AttachStrip(picker: Picker) {
-  return html`${() =>
+  // Return a reactive accessor (not a root-less `html\`${...}\`` template):
+  // solid-js/html can't compile a template whose root is a bare expression
+  // (it emits `_$el = .firstChild` → SyntaxError), and a function child is
+  // inserted reactively by the parent template all the same.
+  return () =>
     picker.images().length
       ? html`<div class="attach-strip">
           ${() =>
@@ -59,7 +63,7 @@ function AttachStrip(picker: Picker) {
               `,
             )}
         </div>`
-      : ""}`;
+      : "";
 }
 
 // Recursive lineage of nested agents spawned via super_agent. Clicking a node
