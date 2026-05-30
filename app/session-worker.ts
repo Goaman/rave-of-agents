@@ -138,6 +138,7 @@ class Worker {
       label: arg("label") || ID,
       model: arg("model") || null,
       cwd: arg("cwd") || process.cwd(),
+      taskId: arg("task-id") || null,
       status: "starting",
       sdkSessionId: null,
       createdAt: Date.now(),

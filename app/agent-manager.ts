@@ -161,6 +161,8 @@ class Handle {
         this.meta.model ?? "",
         "--cwd",
         this.meta.cwd,
+        "--task-id",
+        this.meta.taskId ?? "",
       ],
       { detached: true, stdio: ["ignore", out, out], env: process.env },
     );
@@ -290,17 +292,20 @@ export class AgentManager {
     prompt: string;
     model?: string;
     cwd?: string;
+    taskId?: string | null;
     images?: ImageAttachment[];
   }): SessionMeta {
     const id = `s${++this.seq}-${Date.now().toString(36)}`;
     const label = input.label?.trim() || `agent ${this.seq}`;
     const cwd = input.cwd?.trim() || process.cwd();
     const model = input.model?.trim() || null;
+    const taskId = input.taskId?.trim() || null;
     const meta: SessionMeta = {
       id,
       label,
       model,
       cwd,
+      taskId,
       status: "starting",
       sdkSessionId: null,
       createdAt: Date.now(),

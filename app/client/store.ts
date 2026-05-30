@@ -5,8 +5,10 @@ import { createSignal } from "solid-js";
 import type {
   ClientMessage,
   ImageAttachment,
+  PmState,
   ServerMessage,
   SessionSnapshot,
+  Task,
   TranscriptEntry,
 } from "../types.ts";
 
@@ -14,6 +16,28 @@ import type {
 export const [view, setView] = createSignal<"agents" | "pm">("agents");
 
 export const [sessions, setSessions] = createSignal<SessionSnapshot[]>([]);
+
+// Shared project-board state. Both the board view (pm.ts) and the agent console
+// (the "+ new agent" form needs a task picker) read it, so it lives here rather
+// than inside pm.ts. Mutations in pm.ts write back here too.
+export const [board, setBoard] = createSignal<PmState>({ projects: [], tasks: [] });
+
+// Fetch the board once (best-effort). Used by the new-agent form to populate its
+// task picker without forcing the user to open the Projects tab first.
+export async function loadBoard(): Promise<void> {
+  try {
+    const r = await fetch("/api/pm");
+    if (r.ok) setBoard(await r.json());
+  } catch {
+    /* board is optional context here — ignore load failures */
+  }
+}
+
+// Look up a task by id across the loaded board (for labelling sessions).
+export function taskById(id: string | null | undefined): Task | undefined {
+  if (!id) return undefined;
+  return board().tasks.find((t) => t.id === id);
+}
 export const [selectedId, setSelectedId] = createSignal<string | null>(null);
 // When set, the main view focuses this sub-agent's conversation instead of the
 // session transcript. Cleared whenever a session row is selected.
@@ -102,6 +126,7 @@ export const actions = {
     prompt: string;
     model?: string;
     cwd?: string;
+    taskId?: string | null;
     images?: ImageAttachment[];
   }) => send({ type: "create", ...input }),
   message: (sessionId: string, text: string, images?: ImageAttachment[]) =>

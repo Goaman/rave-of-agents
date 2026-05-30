@@ -68,13 +68,16 @@ export async function ensureTaskWorktree(task: {
   id: string;
   title: string;
   branch?: string;
+  worktree?: string;
   cwd?: string;
 }): Promise<TaskWorktree> {
   const base = task.cwd?.trim() || process.cwd();
   const root =
     (await mainWorktreeRoot(base)) || (await mainWorktreeRoot(process.cwd())) || process.cwd();
   const project = basename(root);
-  const branch = task.branch?.trim() || deriveBranch(task);
+  // Prefer an explicit worktree name on the task, then its branch, else derive
+  // a stable name from the task. The worktree dir and branch share this name.
+  const branch = task.worktree?.trim() || task.branch?.trim() || deriveBranch(task);
 
   const expected = join(WORKTREE_HOME, project, branch);
   if (existsSync(expected)) return { path: expected, branch, project, created: false };

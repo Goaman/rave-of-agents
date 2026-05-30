@@ -124,6 +124,15 @@ button.primary { background: linear-gradient(135deg, var(--accent), var(--accent
 .item-top { display: flex; align-items: center; gap: 8px; }
 .item-top .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-sub { color: var(--dim); font-size: 12px; margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+.item-task { color: #9fe0c0; font-size: 12px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Sessions linked to a task, shown on the task card. */
+.task-sessions { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.task-sessions-head { color: var(--dim); font-size: 12px; }
+.task-session { display: flex; align-items: center; gap: 8px; text-align: left; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; cursor: pointer; font: inherit; }
+.task-session:hover { border-color: #2f6f53; }
+.task-session .badge { margin-left: 0; }
+.task-session-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .badge { margin-left: auto; font-size: 11px; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
 .badge.starting { background: #3a3320; color: #e8c873; }

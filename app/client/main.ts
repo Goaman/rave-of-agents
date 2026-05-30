@@ -6,8 +6,10 @@ import html from "solid-js/html";
 import { createEffect, createSignal } from "solid-js";
 import {
   actions,
+  board,
   connect,
   connected,
+  loadBoard,
   selectSession,
   selectSub,
   selected,
@@ -15,12 +17,13 @@ import {
   selectedSubKey,
   sessions,
   setView,
+  taskById,
   view,
 } from "./store.ts";
 import { PmView } from "./pm.ts";
 import { isCollapsed, toggleCollapse } from "./collapse.ts";
 import { createImagePicker, type PickedImage } from "./images.ts";
-import type { SessionSnapshot, SubAgentNode, TranscriptEntry } from "../types.ts";
+import type { Project, SessionSnapshot, SubAgentNode, Task, TranscriptEntry } from "../types.ts";
 
 // Shared bits of the image-attachment UI, reused by the composer and the
 // new-agent form. `picker` comes from createImagePicker().
@@ -157,25 +160,48 @@ const STATUS_LABEL: Record<string, string> = {
 
 function Sidebar() {
   const [showForm, setShowForm] = createSignal(false);
+  // Every session must belong to a task; this drives the (required) task picker.
+  const [taskId, setTaskId] = createSignal<string>("");
   const picker = createImagePicker();
   let promptEl!: HTMLTextAreaElement;
   let labelEl!: HTMLInputElement;
   let modelEl!: HTMLSelectElement;
   let cwdEl!: HTMLInputElement;
 
+  // Load the board (projects + tasks) so the picker has options. Cheap; re-runs
+  // whenever the form is opened so freshly-added tasks show up.
+  const openForm = () => {
+    setShowForm((v) => !v);
+    if (showForm()) void loadBoard();
+  };
+
+  const selectedTask = (): Task | undefined =>
+    board().tasks.find((t) => t.id === taskId());
+
+  // When a task is picked, prefill the working dir from its cwd (the user can
+  // still override it before launching).
+  const onPickTask = (id: string) => {
+    setTaskId(id);
+    const t = board().tasks.find((x) => x.id === id);
+    if (t && cwdEl && !cwdEl.value.trim()) cwdEl.value = t.cwd ?? "";
+  };
+
   const launch = () => {
     const prompt = promptEl.value.trim();
     const images = picker.payload();
     if (!prompt && !images.length) return;
+    if (!taskId()) return; // a task is required
     actions.create({
       prompt,
       images: images.length ? images : undefined,
-      label: labelEl.value.trim() || undefined,
+      label: labelEl.value.trim() || selectedTask()?.title || undefined,
       model: modelEl.value || undefined,
       cwd: cwdEl.value.trim() || undefined,
+      taskId: taskId(),
     });
     promptEl.value = "";
     labelEl.value = "";
+    setTaskId("");
     picker.clear();
     setShowForm(false);
   };
@@ -188,7 +214,7 @@ function Sidebar() {
         <span class="conn">${() => (connected() ? "live" : "offline")}</span>
       </div>
 
-      <button class="primary" onClick=${() => setShowForm((v) => !v)}>
+      <button class="primary" onClick=${openForm}>
         ${() => (showForm() ? "✕ cancel" : "+ new agent")}
       </button>
 
@@ -196,6 +222,25 @@ function Sidebar() {
         showForm() &&
         html`
           <div class="form">
+            <label>task (required)</label>
+            <select onChange=${(e: Event) => onPickTask((e.target as HTMLSelectElement).value)}>
+              <option value="" selected=${() => !taskId()}>— pick a task —</option>
+              ${() =>
+                board().projects.map((p: Project) => {
+                  const tasks = board().tasks.filter((t: Task) => t.projectId === p.id);
+                  if (!tasks.length) return "";
+                  return html`<optgroup label=${p.name}>
+                    ${tasks.map(
+                      (t: Task) =>
+                        html`<option value=${t.id} selected=${() => taskId() === t.id}>${t.title}</option>`,
+                    )}
+                  </optgroup>`;
+                })}
+            </select>
+            ${() =>
+              board().tasks.length === 0
+                ? html`<span class="hint">No tasks yet — create one in the Projects tab first.</span>`
+                : ""}
             <label>task / first message</label>
             <textarea ref=${(el: HTMLTextAreaElement) => (promptEl = el)} rows="4"
               placeholder="e.g. List the files here and tell me what this project does."
@@ -213,7 +258,8 @@ function Sidebar() {
             </select>
             <label>working dir (optional)</label>
             <input ref=${(el: HTMLInputElement) => (cwdEl = el)} placeholder="server cwd" />
-            <button class="primary" onClick=${launch}>launch agent</button>
+            <button class="primary" onClick=${launch} disabled=${() => !taskId()}
+              title=${() => (!taskId() ? "pick a task first" : "launch agent")}>launch agent</button>
           </div>
         `}
 
@@ -230,6 +276,12 @@ function Sidebar() {
                       <span class="name">${s.label}</span>
                       <span class="badge ${s.status}">${STATUS_LABEL[s.status] ?? s.status}</span>
                     </div>
+                    ${() => {
+                      const t = taskById(s.taskId);
+                      return t
+                        ? html`<div class="item-task" title="task this session belongs to">📋 ${t.title}</div>`
+                        : "";
+                    }}
                     <div class="item-sub">
                       ${s.model ?? "default"} · ${() => s.transcript.length} lines
                       ${() =>
@@ -411,4 +463,7 @@ function App() {
 }
 
 connect();
+// Load the board once at startup so session rows can show their task label
+// without first opening the new-agent form or the Projects tab.
+void loadBoard();
 render(App, document.getElementById("root")!);

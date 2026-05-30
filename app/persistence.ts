@@ -69,6 +69,7 @@ type Row = {
   label: string;
   model: string | null;
   cwd: string;
+  task_id: string | null;
   status: string;
   sdk_session_id: string | null;
   created_at: number;
@@ -84,6 +85,7 @@ function toRow(s: SessionSnapshot): Row {
     label: s.label,
     model: s.model,
     cwd: s.cwd,
+    task_id: s.taskId ?? null,
     status: s.status,
     sdk_session_id: s.sdkSessionId,
     created_at: s.createdAt,
@@ -100,6 +102,7 @@ function fromRow(r: Row): SessionSnapshot {
     label: r.label,
     model: r.model,
     cwd: r.cwd,
+    taskId: r.task_id ?? null,
     status: r.status as SessionSnapshot["status"],
     sdkSessionId: r.sdk_session_id,
     createdAt: Number(r.created_at),

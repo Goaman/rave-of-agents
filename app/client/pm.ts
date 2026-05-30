@@ -7,13 +7,23 @@
 
 import html from "solid-js/html";
 import { createSignal, onMount } from "solid-js";
-import { actions, setView } from "./store.ts";
-import type { PmState, Project, Task, TaskStatus } from "../types.ts";
+import {
+  actions,
+  board as pmState,
+  selectSession,
+  sessions,
+  setBoard as setPmState,
+  setView,
+} from "./store.ts";
+import type { Project, SessionSnapshot, Task, TaskStatus } from "../types.ts";
 
 const API = "/api/pm";
 
-// Remember the last project the user opened across reloads. Reads/writes a
-// single localStorage key; guarded so it degrades gracefully where storage is
+// The board itself lives in the shared store (so the agent console's new-agent
+// form can read tasks too). `pmState`/`setPmState` are the store's board signal.
+//
+// Remember the last project the user opened across reloads via a single
+// localStorage key; guarded so it degrades gracefully where storage is
 // unavailable (private mode, SSR, etc.).
 const SELECTED_PROJECT_KEY = "pm.selectedProjectId";
 
@@ -25,7 +35,6 @@ function readStoredProjectId(): string | null {
   }
 }
 
-const [pmState, setPmState] = createSignal<PmState>({ projects: [], tasks: [] });
 const [selectedProjectId, setSelectedProjectIdRaw] = createSignal<string | null>(
   readStoredProjectId(),
 );
@@ -162,6 +171,7 @@ function TaskEditor(opts: { task?: Task; projectId: string; onClose: () => void 
   let notesEl!: HTMLTextAreaElement;
   let branchEl!: HTMLInputElement;
   let cwdEl!: HTMLInputElement;
+  let worktreeEl!: HTMLInputElement;
   let statusEl!: HTMLSelectElement;
   const t = opts.task;
   const submit = async () => {
@@ -172,6 +182,7 @@ function TaskEditor(opts: { task?: Task; projectId: string; onClose: () => void 
       notes: notesEl.value,
       branch: branchEl.value.trim(),
       cwd: cwdEl.value.trim(),
+      worktree: worktreeEl.value.trim(),
       status: statusEl.value as TaskStatus,
     };
     if (t) await updateTask(t.id, payload);
@@ -200,6 +211,11 @@ function TaskEditor(opts: { task?: Task; projectId: string; onClose: () => void 
       </div>
       <div class="row2">
         <div>
+          <label>worktree</label>
+          <input ref=${(e: HTMLInputElement) => (worktreeEl = e)} value=${t?.worktree ?? ""}
+            placeholder="goa project:worktree:add <name>" />
+        </div>
+        <div>
           <label>status</label>
           <select ref=${(e: HTMLSelectElement) => (statusEl = e)}>
             ${TASK_STATUS.map(
@@ -224,18 +240,22 @@ function launchAgentFor(task: Task) {
     `Work on this task: ${task.title}`,
     task.notes ? `\nNotes:\n${task.notes}` : "",
     task.branch ? `\nGit branch: ${task.branch}` : "",
+    task.worktree ? `\nGit worktree: ${task.worktree}` : "",
   ].filter(Boolean);
+  // Every session is tied to its task (taskId), so the agents view can group
+  // sessions by task and a task can own many of them.
   actions.create({
     label: task.title,
     prompt: lines.join("\n"),
     cwd: task.cwd || undefined,
+    taskId: task.id,
   });
   setView("agents");
 }
 
 // Create a dedicated git worktree for the task (server-side), then launch an
 // agent whose cwd is that worktree — so it works in isolation from your
-// checkout. Records the worktree's branch on the task and marks it in-progress.
+// checkout. Records the worktree name on the task and marks it in-progress.
 async function launchAgentInWorktree(task: Task) {
   setPmBusy(true);
   try {
@@ -250,16 +270,22 @@ async function launchAgentInWorktree(task: Task) {
       task.notes ? `\n${task.notes}` : "",
       `\nYou are in a dedicated git worktree at ${path} on branch \`${branch}\`. Do the work and commit it here.`,
     ].filter(Boolean);
-    actions.create({ label: task.title, prompt: lines.join("\n"), cwd: path });
+    // Link the session to its task and run it inside the worktree.
+    actions.create({ label: task.title, prompt: lines.join("\n"), cwd: path, taskId: task.id });
     setPmError(null);
     setView("agents");
-    // Best-effort: remember the branch and flag the task as started.
-    void updateTask(task.id, { status: "in_progress", branch });
+    // Best-effort: record the worktree name (and its branch) and flag the task started.
+    void updateTask(task.id, { status: "in_progress", branch, worktree: branch });
   } catch (e) {
     setPmError(String(e));
   } finally {
     setPmBusy(false);
   }
+}
+
+// Sessions currently linked to a task (a task can own many).
+function sessionsForTask(taskId: string): SessionSnapshot[] {
+  return sessions().filter((s) => s.taskId === taskId);
 }
 
 function TaskCard(task: Task) {
@@ -278,12 +304,30 @@ function TaskCard(task: Task) {
                   : ""}
               </div>
               ${task.notes ? html`<div class="task-notes">${task.notes}</div>` : ""}
-              ${task.branch || task.cwd
+              ${task.branch || task.cwd || task.worktree
                 ? html`<div class="task-meta">
                     ${task.branch ? html`<span class="chip">⎇ ${task.branch}</span>` : ""}
+                    ${task.worktree ? html`<span class="chip">🌳 ${task.worktree}</span>` : ""}
                     ${task.cwd ? html`<span class="chip">📁 ${task.cwd}</span>` : ""}
                   </div>`
                 : ""}
+              ${() => {
+                const list = sessionsForTask(task.id);
+                if (!list.length) return "";
+                return html`<div class="task-sessions">
+                  <span class="task-sessions-head">${list.length} session(s)</span>
+                  ${list.map((s: SessionSnapshot) => html`
+                    <button class="task-session" title="open this session"
+                      onClick=${() => {
+                        selectSession(s.id);
+                        setView("agents");
+                      }}>
+                      <span class="badge ${s.status}">${s.status}</span>
+                      <span class="task-session-label">${s.label}</span>
+                    </button>
+                  `)}
+                </div>`;
+              }}
               <div class="task-actions">
                 <select onChange=${(e: Event) =>
                   updateTask(task.id, { status: (e.target as HTMLSelectElement).value as TaskStatus })}>

@@ -42,34 +42,37 @@ function statusFromIssue(issue: any): TaskStatus {
   }
 }
 
-// ---- description <-> notes/branch/cwd --------------------------------------
+// ---- description <-> notes/branch/cwd/worktree -----------------------------
 
 const META_RE = /\n*<!-- strawit:meta\n([\s\S]*?)\n-->\s*$/;
 
-function buildDescription(notes: string, branch: string, cwd: string): string {
+function buildDescription(notes: string, branch: string, cwd: string, worktree: string): string {
   const meta = [
     branch ? `branch: ${branch}` : "",
     cwd ? `cwd: ${cwd}` : "",
+    worktree ? `worktree: ${worktree}` : "",
   ].filter(Boolean);
   const body = (notes ?? "").trim();
   if (meta.length === 0) return body;
   return (body ? `${body}\n\n` : "") + `<!-- strawit:meta\n${meta.join("\n")}\n-->`;
 }
 
-function parseDescription(desc: string): { notes: string; branch: string; cwd: string } {
+function parseDescription(desc: string): { notes: string; branch: string; cwd: string; worktree: string } {
   const d = desc ?? "";
   const m = d.match(META_RE);
-  if (!m) return { notes: d.trim(), branch: "", cwd: "" };
+  if (!m) return { notes: d.trim(), branch: "", cwd: "", worktree: "" };
   const notes = d.slice(0, m.index).trim();
   let branch = "";
   let cwd = "";
+  let worktree = "";
   for (const line of m[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.*)$/);
     if (!kv) continue;
     if (kv[1] === "branch") branch = kv[2].trim();
     else if (kv[1] === "cwd") cwd = kv[2].trim();
+    else if (kv[1] === "worktree") worktree = kv[2].trim();
   }
-  return { notes, branch, cwd };
+  return { notes, branch, cwd, worktree };
 }
 
 const toMs = (iso: unknown): number => {
@@ -89,7 +92,7 @@ function mapProject(p: any): Project {
 }
 
 function mapIssue(issue: any): Task {
-  const { notes, branch, cwd } = parseDescription(issue.description ?? "");
+  const { notes, branch, cwd, worktree } = parseDescription(issue.description ?? "");
   return {
     id: String(issue.id),
     projectId: String(issue.projectId ?? ""),
@@ -98,6 +101,7 @@ function mapIssue(issue: any): Task {
     status: statusFromIssue(issue),
     branch,
     cwd,
+    worktree,
     url: issue.url ?? "",
     createdAt: toMs(issue.createdAt),
     updatedAt: toMs(issue.updatedAt),
@@ -195,18 +199,20 @@ export async function createTask(input: {
   status?: TaskStatus;
   branch?: string;
   cwd?: string;
+  worktree?: string;
 }): Promise<Task> {
   const projectId = (input.projectId ?? "").trim();
   if (!projectId) throw new Error("missing projectId");
   const status = normalizeStatus(input.status);
   const branch = (input.branch ?? "").trim();
   const cwd = (input.cwd ?? "").trim();
+  const worktree = (input.worktree ?? "").trim();
 
   const args: Record<string, unknown> = {
     title: (input.title ?? "").trim() || "Untitled task",
     team: TEAM_ID,
     project: projectId,
-    description: buildDescription(input.notes ?? "", branch, cwd),
+    description: buildDescription(input.notes ?? "", branch, cwd, worktree),
   };
 
   if (status === "blocked") {
@@ -229,6 +235,7 @@ export async function updateTask(
     status?: TaskStatus;
     branch?: string;
     cwd?: string;
+    worktree?: string;
   },
 ): Promise<Task> {
   const args: Record<string, unknown> = { id: tid };
@@ -236,10 +243,13 @@ export async function updateTask(
   if (patch.title !== undefined && patch.title.trim()) args.title = patch.title.trim();
 
   // Rebuild the description (and meta footer) whenever any of its parts change.
-  // The editor sends notes+branch+cwd together; the quick status dropdown sends
-  // status only, so we don't touch the description in that case.
+  // The editor sends notes+branch+cwd+worktree together; the quick status
+  // dropdown sends status only, so we don't touch the description in that case.
   const touchesDesc =
-    patch.notes !== undefined || patch.branch !== undefined || patch.cwd !== undefined;
+    patch.notes !== undefined ||
+    patch.branch !== undefined ||
+    patch.cwd !== undefined ||
+    patch.worktree !== undefined;
 
   // A status change needs the current label set so we can add/remove "blocked"
   // without clobbering other labels (save_issue replaces the whole label set).
@@ -253,7 +263,8 @@ export async function updateTask(
     const notes = patch.notes !== undefined ? patch.notes : cur.notes;
     const branch = patch.branch !== undefined ? patch.branch.trim() : cur.branch;
     const cwd = patch.cwd !== undefined ? patch.cwd.trim() : cur.cwd;
-    args.description = buildDescription(notes, branch, cwd);
+    const worktree = patch.worktree !== undefined ? patch.worktree.trim() : cur.worktree;
+    args.description = buildDescription(notes, branch, cwd, worktree);
   }
 
   if (patch.status !== undefined) {

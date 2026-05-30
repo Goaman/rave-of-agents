@@ -42,6 +42,10 @@ export interface SessionMeta {
   label: string;
   model: string | null;
   cwd: string;
+  // The task (Linear issue id) this session belongs to. Every session is
+  // created against a task; a task can own many sessions. Null only for legacy
+  // sessions created before tasks were required.
+  taskId: string | null;
   status: SessionStatus;
   sdkSessionId: string | null;
   createdAt: number;
@@ -100,6 +104,10 @@ export interface Task {
   branch: string;
   // Optional working directory the task happens in (also used to launch an agent).
   cwd: string;
+  // Optional git worktree name dedicated to this task. Sessions launched for the
+  // task are expected to run inside this worktree (create it with
+  // `goa project:worktree:add <project> <name>`).
+  worktree: string;
   // Link to the issue in Linear (empty if unknown).
   url?: string;
   createdAt: number;
@@ -125,7 +133,7 @@ export type ServerMessage =
 
 // ---- Client -> server websocket messages ----
 export type ClientMessage =
-  | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string; images?: ImageAttachment[] }
+  | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string; taskId?: string | null; images?: ImageAttachment[] }
   | { type: "send"; sessionId: string; text: string; images?: ImageAttachment[] }
   | { type: "interrupt"; sessionId: string }
   | { type: "close"; sessionId: string }
