@@ -144,6 +144,18 @@ export function parsePyLiteral(input: string): any {
 
 // ---- Gateway call -----------------------------------------------------------
 
+// The Soda Straw gateway (and the Linear MCP behind it) occasionally returns a
+// transient bad-gateway/unavailable status — a single hiccup would otherwise
+// blank the whole board with an error banner. Retry those a few times with
+// exponential backoff before giving up. 5xx gateway statuses and network-level
+// fetch failures (gateway briefly unreachable) are treated as transient; 4xx
+// (auth/config/bad request) and successful responses are not retried.
+const RETRY_STATUSES = new Set([502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+const BASE_DELAY_MS = 300;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Call a Linear tool through Soda Straw and return the parsed result object.
 // `intent` is the human-readable activity-feed note Soda Straw records.
 export async function callLinear(
@@ -153,28 +165,51 @@ export async function callLinear(
 ): Promise<any> {
   if (!gatewayConfigured()) throw new Error(gatewayConfigError());
 
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${API_KEY}`,
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "straws_call",
-        arguments: {
-          straw: STRAW,
-          tool_name: toolName,
-          arguments: { _intent: intent || `Strawit board: ${toolName}`, ...args },
-        },
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "straws_call",
+      arguments: {
+        straw: STRAW,
+        tool_name: toolName,
+        arguments: { _intent: intent || `Strawit board: ${toolName}`, ...args },
       },
-    }),
+    },
   });
 
+  let res: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      res = await fetch(GATEWAY_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body,
+      });
+    } catch (err) {
+      // Network-level failure (DNS, connection reset, gateway unreachable).
+      lastError = err;
+      res = undefined;
+    }
+
+    const transient = res ? RETRY_STATUSES.has(res.status) : true;
+    if (res && !transient) break; // got a response we won't retry (ok or hard error)
+    if (attempt < MAX_ATTEMPTS) {
+      await sleep(BASE_DELAY_MS * 2 ** (attempt - 1)); // 300ms, 600ms
+      continue;
+    }
+  }
+
+  if (!res) {
+    const detail = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`Soda Straw gateway unreachable after ${MAX_ATTEMPTS} attempts: ${detail}`);
+  }
   if (!res.ok) throw new Error(`Soda Straw gateway HTTP ${res.status}`);
 
   const ct = res.headers.get("content-type") || "";
