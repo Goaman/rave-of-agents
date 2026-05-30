@@ -214,7 +214,8 @@ function Sidebar() {
     const prompt = promptEl.value.trim();
     const images = picker.payload();
     if (!prompt && !images.length) return;
-    if (!taskId()) return; // a task is required
+    // A task is optional: if none is picked the server auto-creates one so the
+    // session is still tracked on the board.
     actions.create({
       prompt,
       images: images.length ? images : undefined,
@@ -246,9 +247,9 @@ function Sidebar() {
         showForm() &&
         html`
           <div class="form">
-            <label>task (required)</label>
+            <label>task (optional)</label>
             <select onChange=${(e: Event) => onPickTask((e.target as HTMLSelectElement).value)}>
-              <option value="" selected=${() => !taskId()}>— pick a task —</option>
+              <option value="" selected=${() => !taskId()}>— none (auto-create a task) —</option>
               ${() =>
                 board().projects.map((p: Project) => {
                   const tasks = board().tasks.filter((t: Task) => t.projectId === p.id);
@@ -263,7 +264,7 @@ function Sidebar() {
             </select>
             ${() =>
               board().tasks.length === 0
-                ? html`<span class="hint">No tasks yet — create one in the Projects tab first.</span>`
+                ? html`<span class="hint">No tasks yet — leave this as "none" and one will be created for you.</span>`
                 : ""}
             <label>task / first message</label>
             <textarea ref=${(el: HTMLTextAreaElement) => (promptEl = el)} rows="4"
@@ -282,8 +283,8 @@ function Sidebar() {
             </select>
             <label>working dir (optional)</label>
             <input ref=${(el: HTMLInputElement) => (cwdEl = el)} placeholder="server cwd" />
-            <button class="primary" onClick=${launch} disabled=${() => !taskId()}
-              title=${() => (!taskId() ? "pick a task first" : "launch agent")}>launch agent</button>
+            <button class="primary" onClick=${launch}
+              title=${() => (!taskId() ? "launch agent (a task will be auto-created)" : "launch agent")}>launch agent</button>
           </div>
         `}
 

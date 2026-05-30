@@ -32,8 +32,17 @@ import {
   workerOutPathFor,
 } from "./persistence.ts";
 import { readLines, writeLine, type WorkerCommand, type WorkerEvent } from "./session-protocol.ts";
+import { ensureSessionTask } from "./pm-store.ts";
+import { gatewayConfigured } from "./linear-gateway.ts";
 
 const WORKER_SCRIPT = join(import.meta.dir, "session-worker.ts");
+
+// First non-empty line of a prompt, trimmed and capped — used to title an
+// auto-created task after the message that kicked the session off.
+function firstLine(text: string, max = 80): string {
+  const line = (text ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+}
 
 type Emit = (event: ManagerEvent) => void;
 
@@ -287,19 +296,36 @@ export class AgentManager {
     return [...this.handles.values()].map((h) => h.snapshot());
   }
 
-  create(input: {
+  async create(input: {
     label?: string;
     prompt: string;
     model?: string;
     cwd?: string;
     taskId?: string | null;
     images?: ImageAttachment[];
-  }): SessionMeta {
+  }): Promise<SessionMeta> {
     const id = `s${++this.seq}-${Date.now().toString(36)}`;
     const label = input.label?.trim() || `agent ${this.seq}`;
     const cwd = input.cwd?.trim() || process.cwd();
     const model = input.model?.trim() || null;
-    const taskId = input.taskId?.trim() || null;
+
+    // Every session belongs to a task. If the caller didn't pick one, auto-create
+    // a task so the session is still tracked on the board — the user no longer has
+    // to choose by hand. If the board (Linear) is unreachable/unconfigured we fall
+    // back to a task-less session so launching never hard-fails on Linear.
+    let taskId = input.taskId?.trim() || null;
+    if (!taskId && gatewayConfigured()) {
+      try {
+        taskId = await ensureSessionTask({
+          title: input.label?.trim() || firstLine(input.prompt),
+          notes: input.prompt,
+          cwd: input.cwd,
+        });
+      } catch (err) {
+        console.error("[agent-manager] auto-create task failed; launching without one:", err);
+      }
+    }
+
     const meta: SessionMeta = {
       id,
       label,

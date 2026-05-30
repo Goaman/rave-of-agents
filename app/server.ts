@@ -93,7 +93,11 @@ export async function startServer(opts: { port?: number; quiet?: boolean } = {})
         }
         switch (msg.type) {
           case "create":
-            manager.create(msg);
+            // create() is async (it may auto-create a task for the session);
+            // fire-and-forget but surface any unexpected failure.
+            manager.create(msg).catch((err) =>
+              console.error("[server] create failed:", err),
+            );
             break;
           case "send":
             manager.send(msg.sessionId, msg.text, msg.images);
