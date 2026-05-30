@@ -137,6 +137,19 @@ export function GameView() {
   let resizeObserver: ResizeObserver | null = null;
   let elapsed = 0; // ms since mount (drives oscillators)
 
+  // ---- drag state ----
+  // A character can be grabbed and dragged with the pointer. A press that doesn't
+  // move past DRAG_THRESHOLD is treated as a click (opens the conversation); a
+  // press that moves is a drag (repositions the sprite, then it resumes wandering).
+  let dragging: Entity | null = null;
+  let dragDX = 0; // pointer-to-entity x offset captured at grab time
+  let dragDY = 0;
+  let dragMoved = false;
+  let downX = 0;
+  let downY = 0;
+  let hoverId: string | null = null; // last entity under the cursor (for cursor feedback)
+  const DRAG_THRESHOLD = 4; // px of movement before a press counts as a drag
+
   // ---- sprite sheet assignment + color-keying ----
   function sheetForEntity(e: Entity): SheetDef | null {
     if (!sheets.length) return null;
@@ -399,6 +412,15 @@ export function GameView() {
         e.presence = Math.min(1, e.presence + dts * 2);
       }
 
+      // held by the pointer: the drag handler owns this entity's position, so
+      // skip wander/physics entirely. Keep a gentle bob and hold the first frame.
+      if (e === dragging) {
+        e.bob += dts * 4;
+        e.animFrame = 0;
+        e.animClock = 0;
+        continue;
+      }
+
       // ---- behavior / physics ----
       const speedBase = e.busy ? 30 : 22;
       if (e.state === "walk") {
@@ -557,7 +579,10 @@ export function GameView() {
   function drawEntity(c: CanvasRenderingContext2D, e: Entity) {
     const alpha = entityAlpha(e);
     if (alpha <= 0.01) return;
-    const hop = hopOffset(e);
+    // While held, lift the sprite off the ground so it reads as "picked up"
+    // (the shadow stays at the feet and fades, selling the height).
+    const lift = e === dragging ? 14 : 0;
+    const hop = hopOffset(e) + lift;
     let x = e.x;
     if (e.state === "error") x += Math.sin(e.shake) * 1.6; // shake
 
@@ -774,21 +799,31 @@ export function GameView() {
     c.closePath();
   }
 
-  // ---- click-to-open ----
-  function onClick(ev: MouseEvent) {
+  // ---- pointer hit-testing + drag-to-move ----
+  function pointerPos(ev: PointerEvent): { x: number; y: number } {
     const rect = canvas.getBoundingClientRect();
-    const mx = ev.clientX - rect.left;
-    const my = ev.clientY - rect.top;
+    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+  }
+
+  // On-screen sprite box (CSS px) for an entity — image size when loaded, else
+  // the procedural doll size.
+  function spriteBox(e: Entity): { w: number; h: number } {
+    const sd = sheetForEntity(e);
+    const usingImage = sd && loaded.get(sd.id);
+    const sz = usingImage ? spriteSize(sd!, e.scale) : null;
+    return {
+      w: sz ? sz.w : DOLL_W * PIXEL * e.scale,
+      h: sz ? sz.h : DOLL_H * PIXEL * e.scale,
+    };
+  }
+
+  // Topmost (nearest-centre) entity whose sprite box contains (mx,my), or null.
+  function entityAt(mx: number, my: number): Entity | null {
     let best: Entity | null = null;
     let bestD = Infinity;
     for (const e of entities.values()) {
       if (entityAlpha(e) < 0.3) continue;
-      const sd = sheetForEntity(e);
-      const usingImage = sd && loaded.get(sd.id);
-      const sz = usingImage ? spriteSize(sd!, e.scale) : null;
-      const spriteW = sz ? sz.w : DOLL_W * PIXEL * e.scale;
-      const spriteH = sz ? sz.h : DOLL_H * PIXEL * e.scale;
-      // hit-box centered horizontally on x, vertical from feet up
+      const { w: spriteW, h: spriteH } = spriteBox(e);
       const dx = Math.abs(mx - e.x);
       const cyTop = e.y - spriteH;
       const within = dx <= spriteW / 2 + 4 && my >= cyTop - 4 && my <= e.y + 4;
@@ -800,9 +835,73 @@ export function GameView() {
         }
       }
     }
-    if (best) {
-      selectSession(best.refId);
+    return best;
+  }
+
+  function onPointerDown(ev: PointerEvent) {
+    if (ev.button !== 0) return; // left button / primary touch only
+    const { x, y } = pointerPos(ev);
+    const e = entityAt(x, y);
+    if (!e) return; // empty space — let it be
+    dragging = e;
+    dragDX = x - e.x;
+    dragDY = y - e.y;
+    dragMoved = false;
+    downX = x;
+    downY = y;
+    e.vx = 0;
+    e.vy = 0;
+    try {
+      canvas.setPointerCapture(ev.pointerId);
+    } catch {
+      /* capture unsupported — dragging still works while over the canvas */
+    }
+    canvas.style.cursor = "grabbing";
+    ev.preventDefault();
+  }
+
+  function onPointerMove(ev: PointerEvent) {
+    const { x, y } = pointerPos(ev);
+    if (dragging) {
+      if (!dragMoved && Math.hypot(x - downX, y - downY) > DRAG_THRESHOLD) dragMoved = true;
+      const box = spriteBox(dragging);
+      const halfW = box.w / 2 + 4;
+      const nx = Math.max(halfW, Math.min(arenaW - halfW, x - dragDX));
+      const ny = Math.max(box.h + 14, Math.min(arenaH - 6, y - dragDY));
+      if (Math.abs(nx - dragging.x) > 0.5) dragging.facing = nx >= dragging.x ? 1 : -1;
+      dragging.x = nx;
+      dragging.y = ny;
+      dragging.vx = 0;
+      dragging.vy = 0;
+      return;
+    }
+    // hover feedback when not dragging: grab cursor over a character.
+    const over = entityAt(x, y);
+    const id = over?.id ?? null;
+    if (id !== hoverId) {
+      hoverId = id;
+      canvas.style.cursor = id ? "grab" : "default";
+    }
+  }
+
+  function onPointerUp(ev: PointerEvent) {
+    if (!dragging) return;
+    const wasDrag = dragMoved;
+    const e = dragging;
+    dragging = null;
+    try {
+      canvas.releasePointerCapture(ev.pointerId);
+    } catch {
+      /* nothing captured */
+    }
+    canvas.style.cursor = "grab";
+    if (!wasDrag) {
+      // a click (no real movement): open the conversation, as before.
+      selectSession(e.refId);
       setView("agents");
+    } else {
+      // dropped: let it resume wandering from the new spot shortly.
+      e.wanderTimer = 200 + Math.random() * 400;
     }
   }
 
@@ -840,7 +939,10 @@ export function GameView() {
     setupCanvas();
     resizeObserver = new ResizeObserver(() => setupCanvas());
     resizeObserver.observe(wrap);
-    canvas.addEventListener("click", onClick);
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
     // best-effort manifest fetch; procedural fallback if it fails.
     fetch("/sprites/manifest.json")
       .then((r) => (r.ok ? r.json() : null))
@@ -857,7 +959,10 @@ export function GameView() {
   onCleanup(() => {
     cancelAnimationFrame(raf);
     resizeObserver?.disconnect();
-    canvas?.removeEventListener("click", onClick);
+    canvas?.removeEventListener("pointerdown", onPointerDown);
+    canvas?.removeEventListener("pointermove", onPointerMove);
+    canvas?.removeEventListener("pointerup", onPointerUp);
+    canvas?.removeEventListener("pointercancel", onPointerUp);
   });
 
   // ---- reactive HUD (DOM + Solid) ----
@@ -904,7 +1009,7 @@ export function GameView() {
           ${legendItem(STATUS_DOT.error, "error")}
         </div>
       </div>
-      <div class="game-hint">click a character to open its conversation</div>
+      <div class="game-hint">drag a character to move it · click to open its conversation</div>
     </div>
   `;
 }
