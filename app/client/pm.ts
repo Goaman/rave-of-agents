@@ -1,0 +1,300 @@
+// Local project board UI (SolidJS via solid-js/html). Talks to the /api/pm REST
+// endpoints; every mutation returns the full board, which we drop straight into
+// the store. CRUD for projects and tasks; tasks carry an optional branch + cwd,
+// and can launch an agent in that cwd straight into the existing console.
+
+import html from "solid-js/html";
+import { createSignal, onMount } from "solid-js";
+import { actions, setView } from "./store.ts";
+import type { PmState, Project, Task, TaskStatus } from "../types.ts";
+
+const API = "/api/pm";
+
+const [pmState, setPmState] = createSignal<PmState>({ projects: [], tasks: [] });
+const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
+const [showProjectForm, setShowProjectForm] = createSignal(false);
+const [editingProject, setEditingProject] = createSignal(false);
+const [showTaskForm, setShowTaskForm] = createSignal(false);
+const [editingTaskId, setEditingTaskId] = createSignal<string | null>(null);
+
+const TASK_STATUS: [TaskStatus, string][] = [
+  ["todo", "To do"],
+  ["in_progress", "In progress"],
+  ["blocked", "Blocked"],
+  ["done", "Done"],
+];
+const STATUS_LABEL = Object.fromEntries(TASK_STATUS) as Record<TaskStatus, string>;
+
+async function refresh() {
+  const r = await fetch(API);
+  if (r.ok) setPmState(await r.json());
+}
+
+async function mutate(path: string, method: string, payload?: unknown): Promise<boolean> {
+  const r = await fetch(API + path, {
+    method,
+    headers: payload ? { "content-type": "application/json" } : undefined,
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  if (r.ok) setPmState(await r.json());
+  return r.ok;
+}
+
+const createProject = (p: { name: string; description: string }) =>
+  mutate("/projects", "POST", p);
+const updateProject = (id: string, p: Partial<Project>) =>
+  mutate(`/projects/${id}`, "PATCH", p);
+const deleteProject = (id: string) => mutate(`/projects/${id}`, "DELETE");
+const createTask = (t: Partial<Task>) => mutate("/tasks", "POST", t);
+const updateTask = (id: string, t: Partial<Task>) => mutate(`/tasks/${id}`, "PATCH", t);
+const deleteTask = (id: string) => mutate(`/tasks/${id}`, "DELETE");
+
+function selectedProject(): Project | undefined {
+  const id = selectedProjectId();
+  return pmState().projects.find((p) => p.id === id);
+}
+function tasksFor(projectId: string): Task[] {
+  return pmState().tasks.filter((t) => t.projectId === projectId);
+}
+
+// ---- forms -------------------------------------------------------------
+
+function ProjectEditor(opts: { project?: Project; onClose: () => void }) {
+  let nameEl!: HTMLInputElement;
+  let descEl!: HTMLTextAreaElement;
+  const p = opts.project;
+  const submit = async () => {
+    const name = nameEl.value.trim();
+    if (!name && !p) return;
+    if (p) await updateProject(p.id, { name, description: descEl.value });
+    else {
+      await createProject({ name, description: descEl.value });
+      // Select the newest project so the user lands on it.
+      const list = pmState().projects;
+      if (list.length) setSelectedProjectId(list[list.length - 1].id);
+    }
+    opts.onClose();
+  };
+  return html`
+    <div class="pm-form">
+      <label>project name</label>
+      <input ref=${(e: HTMLInputElement) => (nameEl = e)} value=${p?.name ?? ""}
+        placeholder="e.g. Billing rewrite" />
+      <label>description</label>
+      <textarea ref=${(e: HTMLTextAreaElement) => (descEl = e)} rows="2"
+        placeholder="what is this project about?">${p?.description ?? ""}</textarea>
+      <div class="editor-actions">
+        <button class="primary" onClick=${submit}>${p ? "save" : "create project"}</button>
+        <button onClick=${opts.onClose}>cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function TaskEditor(opts: { task?: Task; projectId: string; onClose: () => void }) {
+  let titleEl!: HTMLInputElement;
+  let notesEl!: HTMLTextAreaElement;
+  let branchEl!: HTMLInputElement;
+  let cwdEl!: HTMLInputElement;
+  let statusEl!: HTMLSelectElement;
+  const t = opts.task;
+  const submit = async () => {
+    const title = titleEl.value.trim();
+    if (!title) return;
+    const payload = {
+      title,
+      notes: notesEl.value,
+      branch: branchEl.value.trim(),
+      cwd: cwdEl.value.trim(),
+      status: statusEl.value as TaskStatus,
+    };
+    if (t) await updateTask(t.id, payload);
+    else await createTask({ ...payload, projectId: opts.projectId });
+    opts.onClose();
+  };
+  return html`
+    <div class="pm-form task-editor">
+      <label>title</label>
+      <input ref=${(e: HTMLInputElement) => (titleEl = e)} value=${t?.title ?? ""}
+        placeholder="what needs doing?" />
+      <label>notes</label>
+      <textarea ref=${(e: HTMLTextAreaElement) => (notesEl = e)} rows="2"
+        placeholder="details (optional)">${t?.notes ?? ""}</textarea>
+      <div class="row2">
+        <div>
+          <label>branch</label>
+          <input ref=${(e: HTMLInputElement) => (branchEl = e)} value=${t?.branch ?? ""}
+            placeholder="feature/x (optional)" />
+        </div>
+        <div>
+          <label>cwd</label>
+          <input ref=${(e: HTMLInputElement) => (cwdEl = e)} value=${t?.cwd ?? ""}
+            placeholder="working dir (optional)" />
+        </div>
+      </div>
+      <div class="row2">
+        <div>
+          <label>status</label>
+          <select ref=${(e: HTMLSelectElement) => (statusEl = e)}>
+            ${TASK_STATUS.map(
+              ([v, l]) =>
+                html`<option value=${v} selected=${(t?.status ?? "todo") === v}>${l}</option>`,
+            )}
+          </select>
+        </div>
+        <div class="editor-actions">
+          <button class="primary" onClick=${submit}>${t ? "save" : "add task"}</button>
+          <button onClick=${opts.onClose}>cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ---- task card ---------------------------------------------------------
+
+function launchAgentFor(task: Task) {
+  const lines = [
+    `Work on this task: ${task.title}`,
+    task.notes ? `\nNotes:\n${task.notes}` : "",
+    task.branch ? `\nGit branch: ${task.branch}` : "",
+  ].filter(Boolean);
+  actions.create({
+    label: task.title,
+    prompt: lines.join("\n"),
+    cwd: task.cwd || undefined,
+  });
+  setView("agents");
+}
+
+function TaskCard(task: Task) {
+  return html`
+    <div class="task-card">
+      ${() =>
+        editingTaskId() === task.id
+          ? TaskEditor({ task, projectId: task.projectId, onClose: () => setEditingTaskId(null) })
+          : html`
+              <div class="task-head">
+                <span class="tstat ${task.status}">${STATUS_LABEL[task.status]}</span>
+                <span class="task-title">${task.title}</span>
+              </div>
+              ${task.notes ? html`<div class="task-notes">${task.notes}</div>` : ""}
+              ${task.branch || task.cwd
+                ? html`<div class="task-meta">
+                    ${task.branch ? html`<span class="chip">⎇ ${task.branch}</span>` : ""}
+                    ${task.cwd ? html`<span class="chip">📁 ${task.cwd}</span>` : ""}
+                  </div>`
+                : ""}
+              <div class="task-actions">
+                <select onChange=${(e: Event) =>
+                  updateTask(task.id, { status: (e.target as HTMLSelectElement).value as TaskStatus })}>
+                  ${TASK_STATUS.map(
+                    ([v, l]) => html`<option value=${v} selected=${task.status === v}>${l}</option>`,
+                  )}
+                </select>
+                <button onClick=${() => setEditingTaskId(task.id)}>edit</button>
+                <button title="launch a console agent in this task's cwd"
+                  onClick=${() => launchAgentFor(task)}>▶ agent</button>
+                <button class="danger"
+                  onClick=${() => confirm(`Delete task "${task.title}"?`) && deleteTask(task.id)}>delete</button>
+              </div>
+            `}
+    </div>
+  `;
+}
+
+// ---- panes -------------------------------------------------------------
+
+function ProjectList() {
+  return html`
+    <aside class="pm-sidebar">
+      <div class="pm-side-head">
+        <strong>Projects</strong>
+        <button class="primary" onClick=${() => setShowProjectForm((v) => !v)}>
+          ${() => (showProjectForm() ? "✕" : "+ new")}
+        </button>
+      </div>
+      ${() =>
+        showProjectForm()
+          ? ProjectEditor({ onClose: () => setShowProjectForm(false) })
+          : ""}
+      <div class="pm-project-list">
+        ${() =>
+          pmState().projects.length === 0
+            ? html`<p class="empty">No projects yet.</p>`
+            : pmState().projects.map((p: Project) => {
+                const count = () => tasksFor(p.id).length;
+                const done = () => tasksFor(p.id).filter((t) => t.status === "done").length;
+                return html`
+                  <div class="pm-project" classList=${() => ({ active: p.id === selectedProjectId() })}
+                    onClick=${() => {
+                      setSelectedProjectId(p.id);
+                      setEditingProject(false);
+                    }}>
+                    <span class="name">${p.name}</span>
+                    <span class="count">${done}/${count} done</span>
+                  </div>
+                `;
+              })}
+      </div>
+    </aside>
+  `;
+}
+
+function TaskBoard() {
+  return html`
+    <main class="pm-main">
+      ${() => {
+        const p = selectedProject();
+        if (!p) return html`<div class="placeholder">Select or create a project.</div>`;
+
+        const tasks = () => tasksFor(p.id);
+        return html`
+          <header class="pm-head">
+            ${() =>
+              editingProject()
+                ? ProjectEditor({ project: p, onClose: () => setEditingProject(false) })
+                : html`
+                    <div class="pm-head-info">
+                      <strong>${p.name}</strong>
+                      ${p.description ? html`<p class="pm-desc">${p.description}</p>` : ""}
+                    </div>
+                    <div class="head-actions">
+                      <button onClick=${() => setEditingProject(true)}>edit</button>
+                      <button class="danger"
+                        onClick=${() => {
+                          if (confirm(`Delete project "${p.name}" and all its tasks?`)) {
+                            deleteProject(p.id);
+                            setSelectedProjectId(null);
+                          }
+                        }}>delete</button>
+                    </div>
+                  `}
+          </header>
+
+          <div class="pm-tasks">
+            <div class="pm-tasks-head">
+              <span>${() => tasks().length} task(s)</span>
+              <button class="primary" onClick=${() => setShowTaskForm((v) => !v)}>
+                ${() => (showTaskForm() ? "✕ cancel" : "+ add task")}
+              </button>
+            </div>
+            ${() =>
+              showTaskForm()
+                ? TaskEditor({ projectId: p.id, onClose: () => setShowTaskForm(false) })
+                : ""}
+            ${() =>
+              tasks().length === 0
+                ? html`<p class="empty">No tasks yet. Add one above.</p>`
+                : tasks().map((t: Task) => TaskCard(t))}
+          </div>
+        `;
+      }}
+    </main>
+  `;
+}
+
+export function PmView() {
+  onMount(refresh);
+  return html`<div class="pm-app"><${ProjectList} /><${TaskBoard} /></div>`;
+}

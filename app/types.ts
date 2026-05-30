@@ -61,6 +61,39 @@ export interface SessionSnapshot extends SessionMeta {
   subAgents: SubAgentNode[];
 }
 
+// ---- Project management (local, per-worktree) ----
+// A lightweight project board scoped to this worktree. Persisted to a single
+// JSON file at the worktree root so each worktree keeps its own board.
+
+export type TaskStatus = "todo" | "in_progress" | "blocked" | "done";
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Task {
+  id: string;
+  projectId: string;
+  title: string;
+  notes: string;
+  status: TaskStatus;
+  // Optional git branch this task is associated with.
+  branch: string;
+  // Optional working directory the task happens in (also used to launch an agent).
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PmState {
+  projects: Project[];
+  tasks: Task[];
+}
+
 // ---- Server -> client websocket messages ----
 export type ServerMessage =
   | { type: "snapshot"; sessions: SessionSnapshot[] }

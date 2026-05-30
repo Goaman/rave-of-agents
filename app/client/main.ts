@@ -14,7 +14,10 @@ import {
   selectedId,
   selectedSubKey,
   sessions,
+  setView,
+  view,
 } from "./store.ts";
+import { PmView } from "./pm.ts";
 import type { SessionSnapshot, SubAgentNode, TranscriptEntry } from "../types.ts";
 
 // Recursive lineage of nested agents spawned via super_agent. Clicking a node
@@ -285,10 +288,26 @@ function Conversation() {
   `;
 }
 
+function TopNav() {
+  const tab = (id: "agents" | "pm", label: string) => html`
+    <button class="tab" classList=${() => ({ active: view() === id })}
+      onClick=${() => setView(id)}>${label}</button>
+  `;
+  return html`
+    <nav class="topnav">
+      ${tab("agents", "Agents")}
+      ${tab("pm", "Projects")}
+    </nav>
+  `;
+}
+
 function App() {
-  return html`<div class="app">
-    <${Sidebar} />
-    <${Conversation} />
+  return html`<div class="root-shell">
+    <${TopNav} />
+    ${() =>
+      view() === "pm"
+        ? html`<${PmView} />`
+        : html`<div class="app"><${Sidebar} /><${Conversation} /></div>`}
   </div>`;
 }
 

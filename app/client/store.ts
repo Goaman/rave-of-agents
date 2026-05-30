@@ -9,6 +9,9 @@ import type {
   TranscriptEntry,
 } from "../types.ts";
 
+// Top-level view: the existing agent console, or the local project board.
+export const [view, setView] = createSignal<"agents" | "pm">("agents");
+
 export const [sessions, setSessions] = createSignal<SessionSnapshot[]>([]);
 export const [selectedId, setSelectedId] = createSignal<string | null>(null);
 // When set, the main view focuses this sub-agent's conversation instead of the

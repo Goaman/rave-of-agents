@@ -6,6 +6,7 @@
 
 import { AgentManager, type ManagerEvent } from "./agent-manager.ts";
 import type { ClientMessage, ServerMessage } from "./types.ts";
+import { handlePmRequest } from "./pm-api.ts";
 import { join } from "node:path";
 
 const ROOT = import.meta.dir;
@@ -58,6 +59,10 @@ export async function startServer(opts: { port?: number; quiet?: boolean } = {})
         if (srv.upgrade(req)) return; // upgraded
         return new Response("expected websocket", { status: 400 });
       }
+
+      // Project-board REST API (returns null for non-PM routes).
+      const pm = await handlePmRequest(req, url);
+      if (pm) return pm;
 
       // Static files from public/, with index.html at root.
       const path = url.pathname === "/" ? "/index.html" : url.pathname;
