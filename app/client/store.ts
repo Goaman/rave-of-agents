@@ -58,10 +58,42 @@ export function taskById(id: string | null | undefined): Task | undefined {
   if (!id) return undefined;
   return board().tasks.find((t) => t.id === id);
 }
-export const [selectedId, setSelectedId] = createSignal<string | null>(null);
+// The selected session id and focused sub-agent are persisted to localStorage
+// so the active conversation survives a page reload.
+const SELECTED_KEY = "strawit.selectedId";
+const SELECTED_SUB_KEY = "strawit.selectedSubKey";
+function loadStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storeValue(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* ignore persistence failures (private mode, etc.) */
+  }
+}
+
+const [selectedId, setSelectedIdRaw] = createSignal<string | null>(loadStored(SELECTED_KEY));
+export { selectedId };
+export function setSelectedId(id: string | null) {
+  storeValue(SELECTED_KEY, id);
+  return setSelectedIdRaw(id);
+}
 // When set, the main view focuses this sub-agent's conversation instead of the
 // session transcript. Cleared whenever a session row is selected.
-export const [selectedSubKey, setSelectedSubKey] = createSignal<string | null>(null);
+const [selectedSubKey, setSelectedSubKeyRaw] = createSignal<string | null>(
+  loadStored(SELECTED_SUB_KEY),
+);
+export { selectedSubKey };
+export function setSelectedSubKey(key: string | null) {
+  storeValue(SELECTED_SUB_KEY, key);
+  return setSelectedSubKeyRaw(key);
+}
 export const [connected, setConnected] = createSignal(false);
 
 // Select a session and leave any focused sub-agent.
@@ -89,10 +121,17 @@ function patchSession(id: string, fn: (s: SessionSnapshot) => SessionSnapshot) {
 
 function apply(msg: ServerMessage) {
   switch (msg.type) {
-    case "snapshot":
+    case "snapshot": {
       setSessions(msg.sessions);
-      if (!selectedId() && msg.sessions.length) setSelectedId(msg.sessions[0].id);
+      // Honour a persisted selection if it still exists; otherwise fall back to
+      // the first session (and drop a stale sub-agent focus).
+      const cur = selectedId();
+      if (msg.sessions.length && !msg.sessions.some((s) => s.id === cur)) {
+        setSelectedId(msg.sessions[0].id);
+        setSelectedSubKey(null);
+      }
       break;
+    }
     case "session_added":
       setSessions((list) => [...list, { ...msg.session, transcript: [], subAgents: [] }]);
       if (!selectedId()) setSelectedId(msg.session.id);
