@@ -338,10 +338,22 @@ function Conversation() {
   let composer!: HTMLTextAreaElement;
   const picker = createImagePicker();
 
-  // Auto-scroll to the newest entry whenever the selected session's transcript grows.
+  // Whether the transcript is pinned to the bottom. While true, new entries
+  // auto-scroll into view; once the user scrolls up to read history it flips
+  // false and stays there until they scroll all the way back down.
+  const [stickToBottom, setStickToBottom] = createSignal(true);
+  // Tolerance (px) for "completely at the bottom" — covers sub-pixel rounding.
+  const BOTTOM_EPSILON = 4;
+  const isAtBottom = (el: HTMLElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_EPSILON;
+
+  // Auto-scroll to the newest entry whenever the selected session's transcript
+  // grows — but only while pinned to the bottom. If the user has scrolled up,
+  // leave their position untouched until they scroll back down completely.
   createEffect(() => {
     const s = selected();
     s?.transcript.length; // track
+    if (!stickToBottom()) return;
     queueMicrotask(() => {
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
     });
@@ -407,7 +419,13 @@ function Conversation() {
             </div>`;
           }}
 
-          <div class="transcript" ref=${(el: HTMLDivElement) => (scroller = el)}>
+          <div class="transcript" ref=${(el: HTMLDivElement) => {
+            scroller = el;
+            // A freshly-mounted transcript (e.g. after switching sessions)
+            // starts pinned to the bottom.
+            setStickToBottom(true);
+            el.addEventListener("scroll", () => setStickToBottom(isAtBottom(el)));
+          }}>
             ${() =>
               s.transcript.length === 0
                 ? html`<p class="empty">Waiting for the agent…</p>`
