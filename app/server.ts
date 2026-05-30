@@ -96,7 +96,7 @@ export async function startServer(opts: { port?: number; quiet?: boolean } = {})
             manager.create(msg);
             break;
           case "send":
-            manager.send(msg.sessionId, msg.text);
+            manager.send(msg.sessionId, msg.text, msg.images);
             break;
           case "interrupt":
             manager.interrupt(msg.sessionId);

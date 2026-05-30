@@ -14,6 +14,7 @@ import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, openSync, readSync, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  ImageAttachment,
   SessionMeta,
   SessionSnapshot,
   SubAgentNode,
@@ -150,7 +151,7 @@ class Session {
     this.schedulePersist();
   }
 
-  private addEntry(kind: TranscriptKind, text: string, tool?: string) {
+  private addEntry(kind: TranscriptKind, text: string, tool?: string, images?: ImageAttachment[]) {
     const entry: TranscriptEntry = {
       id: nextEntryId++,
       kind,
@@ -161,6 +162,7 @@ class Session {
         .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
         .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ""),
       tool,
+      images: images && images.length ? images : undefined,
       ts: Date.now(),
     };
     this.transcript.push(entry);
@@ -202,7 +204,7 @@ class Session {
 
   // Begin a fresh query loop (resume continues a prior sdk session) and stream
   // the first user message in.
-  private begin(initialPrompt: string, resume?: string) {
+  private begin(initialPrompt: string, resume?: string, images?: ImageAttachment[]) {
     this.queue = new MessageQueue();
     if (SUPER_AGENT_SERVER) {
       this.tree = new SuperTree(); // re-folds the (persistent) log from the top
@@ -213,28 +215,40 @@ class Session {
     }
     this.update({ live: true });
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) as any });
-    this.send(initialPrompt);
+    this.send(initialPrompt, images);
     this.runLoop();
   }
 
   // First run of a brand-new session.
-  start(initialPrompt: string) {
-    this.begin(initialPrompt);
+  start(initialPrompt: string, images?: ImageAttachment[]) {
+    this.begin(initialPrompt, undefined, images);
   }
 
   // Re-attach to a dormant (restored / closed) session and continue it.
-  resume(text: string) {
+  resume(text: string, images?: ImageAttachment[]) {
     this.addEntry("system", "↻ resuming session");
-    this.begin(text, this.meta.sdkSessionId ?? undefined);
+    this.begin(text, this.meta.sdkSessionId ?? undefined, images);
   }
 
-  // Push a user message into the live session. Marks the agent busy.
-  send(text: string) {
-    this.addEntry("user", text);
+  // Push a user message into the live session. Marks the agent busy. When images
+  // are attached, the SDK message carries an Anthropic content-block array
+  // (image blocks + a trailing text block) instead of a plain string.
+  send(text: string, images?: ImageAttachment[]) {
+    this.addEntry("user", text, undefined, images);
     this.update({ status: "running", busy: true });
+    const content =
+      images && images.length
+        ? [
+            ...images.map((img) => ({
+              type: "image" as const,
+              source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
+            })),
+            ...(text ? [{ type: "text" as const, text }] : []),
+          ]
+        : text;
     this.queue?.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
     } as SDKUserMessage);
   }
@@ -409,7 +423,13 @@ export class AgentManager {
     return [...this.sessions.values()].map((s) => s.snapshot());
   }
 
-  create(input: { label?: string; prompt: string; model?: string; cwd?: string }): SessionMeta {
+  create(input: {
+    label?: string;
+    prompt: string;
+    model?: string;
+    cwd?: string;
+    images?: ImageAttachment[];
+  }): SessionMeta {
     const id = `s${++this.seq}-${Date.now().toString(36)}`;
     const label = input.label?.trim() || `agent ${this.seq}`;
     const cwd = input.cwd?.trim() || process.cwd();
@@ -417,16 +437,16 @@ export class AgentManager {
     const session = new Session({ id, label, model, cwd }, this.emit);
     this.sessions.set(id, session);
     this.emit({ type: "session_added", session: session.meta });
-    session.start(input.prompt);
+    session.start(input.prompt, input.images);
     return session.meta;
   }
 
   // Live sessions get the message pushed in; dormant ones are resumed first.
-  send(id: string, text: string) {
+  send(id: string, text: string, images?: ImageAttachment[]) {
     const s = this.sessions.get(id);
     if (!s) return;
-    if (s.meta.live) s.send(text);
-    else s.resume(text);
+    if (s.meta.live) s.send(text, images);
+    else s.resume(text, images);
   }
 
   async interrupt(id: string) {

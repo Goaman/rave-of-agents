@@ -4,6 +4,7 @@
 import { createSignal } from "solid-js";
 import type {
   ClientMessage,
+  ImageAttachment,
   ServerMessage,
   SessionSnapshot,
   TranscriptEntry,
@@ -86,9 +87,15 @@ function send(msg: ClientMessage) {
 }
 
 export const actions = {
-  create: (input: { label?: string; prompt: string; model?: string; cwd?: string }) =>
-    send({ type: "create", ...input }),
-  message: (sessionId: string, text: string) => send({ type: "send", sessionId, text }),
+  create: (input: {
+    label?: string;
+    prompt: string;
+    model?: string;
+    cwd?: string;
+    images?: ImageAttachment[];
+  }) => send({ type: "create", ...input }),
+  message: (sessionId: string, text: string, images?: ImageAttachment[]) =>
+    send({ type: "send", sessionId, text, images }),
   interrupt: (sessionId: string) => send({ type: "interrupt", sessionId }),
   close: (sessionId: string) => send({ type: "close", sessionId }),
   remove: (sessionId: string) => send({ type: "delete", sessionId }),

@@ -18,7 +18,49 @@ import {
   view,
 } from "./store.ts";
 import { PmView } from "./pm.ts";
+import { createImagePicker, type PickedImage } from "./images.ts";
 import type { SessionSnapshot, SubAgentNode, TranscriptEntry } from "../types.ts";
+
+// Shared bits of the image-attachment UI, reused by the composer and the
+// new-agent form. `picker` comes from createImagePicker().
+type Picker = ReturnType<typeof createImagePicker>;
+
+// A "📎" button that opens a (hidden) multi-image file chooser.
+function AttachButton(picker: Picker) {
+  let fileEl!: HTMLInputElement;
+  return html`
+    <span class="attach">
+      <input type="file" accept="image/*" multiple class="attach-input"
+        ref=${(el: HTMLInputElement) => (fileEl = el)}
+        onChange=${(e: Event) => {
+          const input = e.currentTarget as HTMLInputElement;
+          if (input.files) void picker.addFiles(input.files);
+          input.value = ""; // allow re-picking the same file
+        }} />
+      <button type="button" class="attach-btn" title="Attach image(s)"
+        onClick=${() => fileEl.click()}>📎</button>
+    </span>
+  `;
+}
+
+// A strip of thumbnails for the currently-attached images, each removable.
+function AttachStrip(picker: Picker) {
+  return html`${() =>
+    picker.images().length
+      ? html`<div class="attach-strip">
+          ${() =>
+            picker.images().map(
+              (img: PickedImage) => html`
+                <div class="thumb" title=${img.name}>
+                  <img src=${img.url} alt=${img.name} />
+                  <button type="button" class="thumb-x" title="Remove"
+                    onClick=${() => picker.remove(img.id)}>✕</button>
+                </div>
+              `,
+            )}
+        </div>`
+      : ""}`;
+}
 
 // Recursive lineage of nested agents spawned via super_agent. Clicking a node
 // focuses that sub-agent's conversation. Rebuilt whole whenever the session's
@@ -100,6 +142,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 function Sidebar() {
   const [showForm, setShowForm] = createSignal(false);
+  const picker = createImagePicker();
   let promptEl!: HTMLTextAreaElement;
   let labelEl!: HTMLInputElement;
   let modelEl!: HTMLSelectElement;
@@ -107,15 +150,18 @@ function Sidebar() {
 
   const launch = () => {
     const prompt = promptEl.value.trim();
-    if (!prompt) return;
+    const images = picker.payload();
+    if (!prompt && !images.length) return;
     actions.create({
       prompt,
+      images: images.length ? images : undefined,
       label: labelEl.value.trim() || undefined,
       model: modelEl.value || undefined,
       cwd: cwdEl.value.trim() || undefined,
     });
     promptEl.value = "";
     labelEl.value = "";
+    picker.clear();
     setShowForm(false);
   };
 
@@ -137,7 +183,10 @@ function Sidebar() {
           <div class="form">
             <label>task / first message</label>
             <textarea ref=${(el: HTMLTextAreaElement) => (promptEl = el)} rows="4"
-              placeholder="e.g. List the files here and tell me what this project does."></textarea>
+              placeholder="e.g. List the files here and tell me what this project does."
+              onPaste=${(e: ClipboardEvent) => picker.addFromClipboard(e.clipboardData)}></textarea>
+            ${AttachStrip(picker)}
+            <div class="form-attach">${AttachButton(picker)}<span class="hint">attach or paste image(s)</span></div>
             <label>label (optional)</label>
             <input ref=${(el: HTMLInputElement) => (labelEl = el)} placeholder="my agent" />
             <label>model</label>
@@ -195,7 +244,15 @@ function Entry(props: { e: TranscriptEntry }) {
   return html`
     <div class="entry ${e.kind}">
       <span class="who">${head}</span>
-      <div class="text">${e.text}</div>
+      ${e.images && e.images.length
+        ? html`<div class="entry-images">
+            ${e.images.map(
+              (img) => html`<img class="entry-img"
+                src=${`data:${img.mediaType};base64,${img.data}`} alt=${img.name ?? "image"} />`,
+            )}
+          </div>`
+        : ""}
+      ${e.text ? html`<div class="text">${e.text}</div>` : ""}
     </div>
   `;
 }
@@ -203,6 +260,7 @@ function Entry(props: { e: TranscriptEntry }) {
 function Conversation() {
   let scroller!: HTMLDivElement;
   let composer!: HTMLTextAreaElement;
+  const picker = createImagePicker();
 
   // Auto-scroll to the newest entry whenever the selected session's transcript grows.
   createEffect(() => {
@@ -216,9 +274,11 @@ function Conversation() {
   const sendMsg = () => {
     const s = selected();
     const text = composer.value.trim();
-    if (!s || !text) return;
-    actions.message(s.id, text);
+    const images = picker.payload();
+    if (!s || (!text && !images.length)) return;
+    actions.message(s.id, text, images.length ? images : undefined);
     composer.value = "";
+    picker.clear();
   };
 
   const onKey = (e: KeyboardEvent) => {
@@ -273,14 +333,24 @@ function Conversation() {
                 : s.transcript.map((e: TranscriptEntry) => html`<${Entry} e=${e} />`)}
           </div>
 
-          <div class="composer">
-            <textarea ref=${(el: HTMLTextAreaElement) => (composer = el)} rows="2"
-              placeholder=${() =>
-                s.live
-                  ? "Message this agent (⌘/Ctrl+Enter to send)…"
-                  : "Send to resume this conversation (⌘/Ctrl+Enter)…"}
-              onKeyDown=${onKey}></textarea>
-            <button class="primary" onClick=${sendMsg}>${() => (s.live ? "send" : "resume")}</button>
+          <div class="composer"
+            onDragOver=${(e: DragEvent) => e.preventDefault()}
+            onDrop=${(e: DragEvent) => {
+              e.preventDefault();
+              if (e.dataTransfer?.files?.length) void picker.addFiles(e.dataTransfer.files);
+            }}>
+            ${AttachStrip(picker)}
+            <div class="composer-row">
+              ${AttachButton(picker)}
+              <textarea ref=${(el: HTMLTextAreaElement) => (composer = el)} rows="2"
+                placeholder=${() =>
+                  s.live
+                    ? "Message this agent (⌘/Ctrl+Enter to send, paste/drop images)…"
+                    : "Send to resume this conversation (⌘/Ctrl+Enter)…"}
+                onPaste=${(e: ClipboardEvent) => picker.addFromClipboard(e.clipboardData)}
+                onKeyDown=${onKey}></textarea>
+              <button class="primary" onClick=${sendMsg}>${() => (s.live ? "send" : "resume")}</button>
+            </div>
           </div>
         `;
       }}

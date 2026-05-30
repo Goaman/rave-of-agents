@@ -16,12 +16,24 @@ export type TranscriptKind =
   | "system" // SDK system/init/notice
   | "error";
 
+// An image attached to a user prompt. `data` is raw base64 (no data: prefix);
+// `mediaType` is the MIME type (e.g. "image/png"). Sent to the agent as an
+// Anthropic image content block and echoed back in the transcript for display.
+export interface ImageAttachment {
+  mediaType: string;
+  data: string;
+  // Optional original filename, shown as a tooltip / alt text.
+  name?: string;
+}
+
 export interface TranscriptEntry {
   id: number;
   kind: TranscriptKind;
   text: string;
   // Optional extras for richer rendering.
   tool?: string;
+  // Images attached to a user message (kind === "user").
+  images?: ImageAttachment[];
   ts: number;
 }
 
@@ -105,8 +117,8 @@ export type ServerMessage =
 
 // ---- Client -> server websocket messages ----
 export type ClientMessage =
-  | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string }
-  | { type: "send"; sessionId: string; text: string }
+  | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string; images?: ImageAttachment[] }
+  | { type: "send"; sessionId: string; text: string; images?: ImageAttachment[] }
   | { type: "interrupt"; sessionId: string }
   | { type: "close"; sessionId: string }
   | { type: "delete"; sessionId: string };
