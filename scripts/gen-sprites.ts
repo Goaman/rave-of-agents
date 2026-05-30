@@ -68,13 +68,18 @@ const CHARACTERS: { id: string; desc: string }[] = [
 
 function prompt(desc: string, n: number): string {
   return [
-    `Pixel-art sprite sheet, side-view, of a ${desc} walking.`,
-    `Produce EXACTLY ${n} frames of a left-to-right walk cycle, arranged in a SINGLE`,
-    `horizontal row, evenly spaced, each frame the same size, all facing RIGHT.`,
-    `Flat solid magenta background (#FF00FF) with NO gradients, NO shadows on the`,
-    `background, NO text, NO grid lines, NO numbers. Characters fully contained within`,
-    `their frame with a consistent baseline (feet aligned). Crisp pixel-art, limited`,
-    `palette, 1px dark outline. Clean and centered.`,
+    `A pixel-art walk-cycle sprite sheet of a ${desc}, side view, all frames facing RIGHT.`,
+    `Show EXACTLY ${n} animation frames of a left-to-right walk cycle arranged in ONE`,
+    `SINGLE HORIZONTAL ROW (one row only — never a grid, never stacked rows).`,
+    `The ${n} characters are evenly spaced left to right, the same size, with feet on a`,
+    `common baseline.`,
+    `CRITICAL: do NOT draw any boxes, panels, frames, cells, borders, outlines, separators,`,
+    `or dividing lines around or between the characters. There must be NO grid and NO`,
+    `rectangles. The characters simply float on one continuous flat background.`,
+    `The background is a single solid flat magenta color (#FF00FF) filling the whole image,`,
+    `edge to edge — NO gradient, NO vignette, NO ground line, NO shadow on the background,`,
+    `NO text, NO numbers, NO labels.`,
+    `Crisp clean pixel art, limited palette, 1px dark outline on the characters only.`,
   ].join(" ");
 }
 
@@ -212,6 +217,7 @@ async function main() {
         frameH: info.height,
         frames,
         cols: frames,
+        rows: 1,
       });
       console.log(
         `  wrote ${file} — ${bytes.length} bytes, ${info.width}x${info.height} (frameW=${frameW})`,

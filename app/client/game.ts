@@ -146,14 +146,14 @@ export function GameView() {
     return sd;
   }
 
-  // Process a loaded sheet: key the background out to transparent, then measure
-  // the real content geometry (rows/cols/frame box). The generated strips vary
-  // wildly (magenta vs white backgrounds, with/without frame borders, 1 vs 2
-  // rows), so we (a) always key pure magenta, (b) also key whatever flat colour
-  // dominates the image corners (covers white-bg sheets), and (c) derive the
-  // frame box from the bounding box of the remaining opaque content. If anything
-  // fails or looks degenerate we leave the manifest geometry in place and draw
-  // the raw image — the procedural path still guarantees something renders.
+  // Process a loaded sheet: key the flat magenta background out to transparent,
+  // strip any full-width "ground line" the model sometimes draws, and measure the
+  // vertical content band so sprites are anchored by their feet. Horizontal
+  // slicing is a simple even division by the manifest's `cols` — the generated
+  // sheets are clean single rows of equal-width frames, which is far more reliable
+  // than trying to auto-detect frame boundaries (that mis-fired and drew two
+  // characters per frame). If anything fails we keep the manifest geometry and
+  // draw the raw image; the procedural path still guarantees something renders.
   function processSheet(sd: SheetDef, img: HTMLImageElement) {
     try {
       const W = img.naturalWidth;
@@ -168,95 +168,60 @@ export function GameView() {
       octx.drawImage(img, 0, 0);
       const data = octx.getImageData(0, 0, W, H);
       const px = data.data;
+      const MIN_A = 24;
 
-      // Background colour = the most common of the four corner pixels.
-      const corners = [
-        [0, 0],
-        [W - 1, 0],
-        [0, H - 1],
-        [W - 1, H - 1],
-      ];
-      const sample = corners.map(([cx, cy]) => {
-        const o = (cy * W + cx) * 4;
-        return [px[o], px[o + 1], px[o + 2]];
-      });
-      const bg = sample[0]; // top-left is reliably background in all variants
-
-      const isBg = (r: number, g: number, b: number) => {
-        // pure-magenta key (the prompted background)
-        if (r > 200 && g < 70 && b > 200) return true;
-        // flat corner-background key (e.g. white-bg sheets)
-        const d = Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]);
-        return d < 36;
-      };
-
+      // 1. Key the prompted flat magenta (#FF00FF) background to transparent.
+      //    (Only magenta — the backgrounds are now uniform, so we avoid the old
+      //    corner-colour key that could eat light pixels in the sprites.)
+      const isMagenta = (r: number, g: number, b: number) => r > 180 && g < 90 && b > 180;
       for (let i = 0; i < px.length; i += 4) {
-        if (isBg(px[i], px[i + 1], px[i + 2])) px[i + 3] = 0;
+        if (isMagenta(px[i], px[i + 1], px[i + 2])) px[i + 3] = 0;
+      }
+
+      // 2. Strip full-width horizontal "ground lines" the model occasionally adds
+      //    (robot/ninja). A real frame row never spans the whole width — the four
+      //    frames leave wide gaps between them — so a mostly-opaque row is
+      //    background furniture, not a character.
+      for (let y = 0; y < H; y++) {
+        const base = y * W * 4;
+        let count = 0;
+        for (let x = 0; x < W; x++) if (px[base + x * 4 + 3] > MIN_A) count++;
+        if (count > W * 0.7) for (let x = 0; x < W; x++) px[base + x * 4 + 3] = 0;
       }
       octx.putImageData(data, 0, 0);
       keyed.set(sd.id, off);
 
-      // ---- geometry detection on the keyed alpha channel ----
-      // Column occupancy: which x columns contain any opaque pixel.
-      const colHas = new Uint8Array(W);
-      const rowHas = new Uint8Array(H);
-      const MIN_A = 24;
+      // 3. Vertical content band (feet-anchoring): first/last row with content.
+      let top = -1;
+      let bottom = -1;
       for (let y = 0; y < H; y++) {
+        const base = y * W * 4;
+        let any = false;
         for (let x = 0; x < W; x++) {
-          if (px[(y * W + x) * 4 + 3] > MIN_A) {
-            colHas[x] = 1;
-            rowHas[y] = 1;
+          if (px[base + x * 4 + 3] > MIN_A) {
+            any = true;
+            break;
           }
         }
+        if (any) {
+          if (top < 0) top = y;
+          bottom = y;
+        }
       }
-      // Content vertical extent + split into rows by gaps taller than a threshold.
-      const rowBands = bandsFrom(rowHas, Math.max(6, Math.floor(H * 0.04)));
-      const colBands = bandsFrom(colHas, Math.max(4, Math.floor(W * 0.01)));
-      if (!rowBands.length || !colBands.length) return; // empty — keep manifest
+      if (top < 0) return; // fully transparent — keep manifest geometry
 
-      // Pick the row band that best matches `cols` content columns. If a single
-      // row spans most of the width assume the strip is one row of `frames`.
-      const rows = rowBands.length >= 2 && rowBands.length <= 3 ? rowBands.length : 1;
-      const top = rowBands[0].start;
-      const bottom = rowBands[rowBands.length - 1].end;
-      const sx0 = colBands[0].start;
-      const right = colBands[colBands.length - 1].end;
-      const contentW = Math.max(1, right - sx0);
-      const contentH = Math.max(1, bottom - top);
-      const cols = Math.max(1, Math.round(sd.frames / rows));
+      const cols = Math.max(1, sd.cols || sd.frames || 1);
       geom.set(sd.id, {
-        sx0,
+        sx0: 0,
         sy0: top,
-        frameW: Math.floor(contentW / cols),
-        frameH: Math.floor(contentH / rows),
+        frameW: Math.floor(W / cols),
+        frameH: Math.max(1, bottom - top + 1),
         cols,
-        rows,
+        rows: 1,
       });
     } catch {
-      /* tainted canvas / cross-origin / decode issue — keep manifest geometry */
+      /* tainted canvas / decode issue — keep manifest geometry, draw raw image */
     }
-  }
-
-  // Collapse a 0/1 occupancy array into contiguous "bands" of set pixels,
-  // merging runs separated by gaps smaller than `minGap`.
-  function bandsFrom(occ: Uint8Array, minGap: number): { start: number; end: number }[] {
-    const bands: { start: number; end: number }[] = [];
-    let i = 0;
-    const n = occ.length;
-    while (i < n) {
-      while (i < n && !occ[i]) i++;
-      if (i >= n) break;
-      let start = i;
-      while (i < n && occ[i]) i++;
-      let end = i; // exclusive
-      // merge with previous band if the gap is small
-      if (bands.length && start - bands[bands.length - 1].end < minGap) {
-        bands[bands.length - 1].end = end;
-      } else {
-        bands.push({ start, end });
-      }
-    }
-    return bands;
   }
 
   function initSheets(m: Manifest) {
