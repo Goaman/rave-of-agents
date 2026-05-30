@@ -21,6 +21,7 @@ import {
   view,
 } from "./store.ts";
 import { PmView } from "./pm.ts";
+import { confirmDialog, DialogHost, installGlobalErrorHandlers } from "./dialog.ts";
 import { isCollapsed, toggleCollapse } from "./collapse.ts";
 import { createImagePicker, type PickedImage } from "./images.ts";
 import type { Project, SessionSnapshot, SubAgentNode, Task, TranscriptEntry } from "../types.ts";
@@ -457,9 +458,18 @@ function Conversation() {
                  <button onClick=${() => actions.close(s.id)}>close</button>`;
         }}
         <button class="danger"
-          onClick=${() => {
+          onClick=${async () => {
             const s = selected();
-            if (s && confirm(`Delete "${s.label}" permanently?`)) actions.remove(s.id);
+            if (
+              s &&
+              (await confirmDialog({
+                title: "Delete agent",
+                message: `Delete "${s.label}" permanently?`,
+                confirmLabel: "Delete",
+                danger: true,
+              }))
+            )
+              actions.remove(s.id);
           }}>delete</button>
       </div>
     </header>
@@ -547,9 +557,13 @@ function App() {
       view() === "pm"
         ? html`<${PmView} />`
         : html`<div class="app"><${Sidebar} /><${Conversation} /></div>`}
+    <${DialogHost} />
   </div>`;
 }
 
+// Surface any otherwise-unhandled runtime error or promise rejection in a
+// dialog instead of letting it fail silently in the console.
+installGlobalErrorHandlers();
 connect();
 // Load the board once at startup so session rows can show their task label
 // without first opening the new-agent form or the Projects tab.

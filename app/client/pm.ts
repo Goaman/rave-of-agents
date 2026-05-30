@@ -7,6 +7,7 @@
 
 import html from "solid-js/html";
 import { createSignal, onMount } from "solid-js";
+import { confirmDialog } from "./dialog.ts";
 import {
   actions,
   board as pmState,
@@ -341,7 +342,17 @@ function TaskCard(task: Task) {
                 <button title="create a dedicated git worktree for this task and launch an agent in it"
                   onClick=${() => launchAgentInWorktree(task)}>⎇ agent</button>
                 <button class="danger"
-                  onClick=${() => confirm(`Delete task "${task.title}"?`) && deleteTask(task.id)}>delete</button>
+                  onClick=${async () => {
+                    if (
+                      await confirmDialog({
+                        title: "Delete task",
+                        message: `Delete task "${task.title}"?`,
+                        confirmLabel: "Delete",
+                        danger: true,
+                      })
+                    )
+                      deleteTask(task.id);
+                  }}>delete</button>
               </div>
             `}
     </div>
@@ -413,8 +424,15 @@ function TaskBoard() {
                     <div class="head-actions">
                       <button onClick=${() => setEditingProject(true)}>edit</button>
                       <button class="danger"
-                        onClick=${() => {
-                          if (confirm(`Delete project "${p.name}" and all its tasks?`)) {
+                        onClick=${async () => {
+                          if (
+                            await confirmDialog({
+                              title: "Delete project",
+                              message: `Delete project "${p.name}" and all its tasks?`,
+                              confirmLabel: "Delete",
+                              danger: true,
+                            })
+                          ) {
                             deleteProject(p.id);
                             setSelectedProjectId(null);
                           }
