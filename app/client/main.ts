@@ -18,6 +18,7 @@ import {
   view,
 } from "./store.ts";
 import { PmView } from "./pm.ts";
+import { isCollapsed, toggleCollapse } from "./collapse.ts";
 import { createImagePicker, type PickedImage } from "./images.ts";
 import type { SessionSnapshot, SubAgentNode, TranscriptEntry } from "../types.ts";
 
@@ -73,8 +74,10 @@ function SubTreeImpl(nodes: SubAgentNode[], parent: string | null, sessionId: st
   const kids = nodes.filter((n) => n.parentKey === parent);
   if (kids.length === 0) return "";
   return html`<div class="tree">
-    ${kids.map(
-      (n: SubAgentNode) => html`
+    ${kids.map((n: SubAgentNode) => {
+      const hasKids = nodes.some((c) => c.parentKey === n.key);
+      const cid = `node:${n.key}`;
+      return html`
         <div class="tnode">
           <div class="tnode-row clickable"
             classList=${() => ({ "tnode-active": n.key === selectedSubKey() })}
@@ -82,6 +85,14 @@ function SubTreeImpl(nodes: SubAgentNode[], parent: string | null, sessionId: st
               e.stopPropagation();
               selectSub(sessionId, n.key);
             }}>
+            ${hasKids
+              ? html`<span class="caret" classList=${() => ({ collapsed: isCollapsed(cid) })}
+                  title="collapse / expand children"
+                  onClick=${(e: MouseEvent) => {
+                    e.stopPropagation();
+                    toggleCollapse(cid);
+                  }}>▾</span>`
+              : html`<span class="caret-spacer"></span>`}
             <span class="tstatus ${n.status}"></span>
             <span class="tdepth">L${n.depth}</span>
             <span class="tprompt">${n.prompt || "(no prompt)"}</span>
@@ -89,10 +100,10 @@ function SubTreeImpl(nodes: SubAgentNode[], parent: string | null, sessionId: st
           ${n.resultPreview
             ? html`<div class="tresult ${n.status}">↩ ${n.resultPreview}</div>`
             : ""}
-          ${SubTreeImpl(nodes, n.key, sessionId)}
+          ${() => (hasKids && !isCollapsed(cid) ? SubTreeImpl(nodes, n.key, sessionId) : "")}
         </div>
-      `,
-    )}
+      `;
+    })}
   </div>`;
 }
 
@@ -210,8 +221,9 @@ function Sidebar() {
         ${() =>
           sessions().length === 0
             ? html`<p class="empty">No agents yet. Launch one above.</p>`
-            : sessions().map((s: SessionSnapshot) =>
-                html`
+            : sessions().map((s: SessionSnapshot) => {
+                const sid = `side:${s.id}`;
+                return html`
                   <div class="item" classList=${() => ({ active: s.id === selectedId() })}
                     onClick=${() => selectSession(s.id)}>
                     <div class="item-top">
@@ -222,14 +234,22 @@ function Sidebar() {
                       ${s.model ?? "default"} · ${() => s.transcript.length} lines
                       ${() =>
                         s.subAgents.length
-                          ? html`<span class="sub-count">· ${s.subAgents.length} sub-agents</span>`
+                          ? html`<span class="sub-count clickable"
+                              title="collapse / expand sub-agents"
+                              onClick=${(e: MouseEvent) => {
+                                e.stopPropagation();
+                                toggleCollapse(sid);
+                              }}>· ${() => (isCollapsed(sid) ? "▸" : "▾")} ${s.subAgents.length} sub-agents</span>`
                           : ""}
                       ${() => (s.busy ? html`<span class="spinner"></span>` : "")}
                     </div>
-                    ${() => (s.subAgents.length ? SubTreeImpl(s.subAgents, null, s.id) : "")}
+                    ${() =>
+                      s.subAgents.length && !isCollapsed(sid)
+                        ? SubTreeImpl(s.subAgents, null, s.id)
+                        : ""}
                   </div>
-                `,
-              )}
+                `;
+              })}
       </div>
     </aside>
   `;
@@ -322,13 +342,18 @@ function Conversation() {
             </div>
           </header>
 
-          ${() =>
-            s.subAgents.length
-              ? html`<div class="subagents-panel">
-                  <div class="panel-title">🌿 sub-agent tree (${s.subAgents.length}) — click a node to open it</div>
-                  ${SubTreeImpl(s.subAgents, null, s.id)}
-                </div>`
-              : ""}
+          ${() => {
+            if (!s.subAgents.length) return "";
+            const pid = `subpanel:${s.id}`;
+            return html`<div class="subagents-panel">
+              <div class="panel-title clickable" onClick=${() => toggleCollapse(pid)}>
+                <span class="caret" classList=${() => ({ collapsed: isCollapsed(pid) })}>▾</span>
+                🌿 sub-agent tree (${s.subAgents.length}) —
+                ${() => (isCollapsed(pid) ? "click to expand" : "click a node to open it")}
+              </div>
+              ${() => (isCollapsed(pid) ? "" : SubTreeImpl(s.subAgents, null, s.id))}
+            </div>`;
+          }}
 
           <div class="transcript" ref=${(el: HTMLDivElement) => (scroller = el)}>
             ${() =>

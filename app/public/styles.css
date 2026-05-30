@@ -175,6 +175,16 @@ button.danger:hover { border-color: #ff7a8a; }
 
 .subagents-panel { border-bottom: 1px solid var(--border); padding: 12px 18px; background: #10141d; max-height: 38vh; overflow: auto; }
 .panel-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin-bottom: 8px; }
+.panel-title.clickable { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.panel-title.clickable:hover { color: var(--text); }
+
+/* collapse carets — rotate to ▸ when the section is collapsed */
+.caret { display: inline-block; flex: none; color: var(--dim); font-size: 11px; transition: transform .12s ease; cursor: pointer; }
+.caret.collapsed { transform: rotate(-90deg); }
+.caret:hover { color: var(--text); }
+.caret-spacer { display: inline-block; flex: none; width: 11px; }
+.sub-count.clickable { cursor: pointer; user-select: none; }
+.sub-count.clickable:hover { text-decoration: underline; }
 
 /* nested tree: each level indents and draws a guide line */
 .tree { display: flex; flex-direction: column; gap: 6px; }
