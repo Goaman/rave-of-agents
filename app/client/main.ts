@@ -172,11 +172,14 @@ function SubAgentDetail(
               : ""}
           ${() => {
             const s = sessionAcc();
-            return s && hasRunningSubs(s)
-              ? html`<button class="warn"
-                  title="interrupt every running sub-agent of this session"
-                  onClick=${() => actions.interruptAllSubs(s.id)}>interrupt all</button>`
-              : "";
+            if (!s) return "";
+            return html`<button class="warn"
+                title="interrupt every running sub-agent of this session"
+                disabled=${() => {
+                  const ss = sessionAcc();
+                  return !ss || !hasRunningSubs(ss);
+                }}
+                onClick=${() => actions.interruptAllSubs(s.id)}>interrupt all</button>`;
           }}
         </div>
       </header>
@@ -548,10 +551,16 @@ function Conversation() {
         }}
         ${() => {
           const s = selected();
-          return s && hasRunningSubs(s)
-            ? html`<button class="warn" title="interrupt every running sub-agent of this session"
-                onClick=${() => actions.interruptAllSubs(s.id)}>interrupt sub-agents</button>`
-            : "";
+          // Shown whenever the session has spawned sub-agents (discoverable
+          // beside "interrupt"); enabled only while at least one is running.
+          if (!s || !s.subAgents.length) return "";
+          return html`<button class="warn"
+              title="interrupt every running sub-agent of this session"
+              disabled=${() => {
+                const cur = selected();
+                return !cur || !hasRunningSubs(cur);
+              }}
+              onClick=${() => actions.interruptAllSubs(s.id)}>interrupt sub-agents</button>`;
         }}
         <button class="danger"
           onClick=${async () => {
