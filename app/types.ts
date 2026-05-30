@@ -1,0 +1,79 @@
+// Shared types between the Bun server and the SolidJS client.
+
+export type SessionStatus =
+  | "starting" // query() created, waiting for SDK init
+  | "running" // agent is actively working on a turn
+  | "idle" // turn finished, awaiting the next user message
+  | "done" // session closed cleanly
+  | "error"; // session ended with an error
+
+// One visible line in a session transcript.
+export type TranscriptKind =
+  | "user" // a message the human sent
+  | "assistant" // assistant text
+  | "tool_use" // the agent called a tool
+  | "result" // end-of-turn result summary
+  | "system" // SDK system/init/notice
+  | "error";
+
+export interface TranscriptEntry {
+  id: number;
+  kind: TranscriptKind;
+  text: string;
+  // Optional extras for richer rendering.
+  tool?: string;
+  ts: number;
+}
+
+export interface SessionMeta {
+  id: string;
+  label: string;
+  model: string | null;
+  cwd: string;
+  status: SessionStatus;
+  sdkSessionId: string | null;
+  createdAt: number;
+  // True while the agent is mid-turn (so the UI can show a spinner / disable nothing).
+  busy: boolean;
+  // True while a query() is attached. Restored-from-disk sessions start dormant
+  // (live: false) and become live again when resumed by sending a message.
+  live: boolean;
+}
+
+// A nested agent spawned (recursively) via the super_agent MCP tool. depth 1 is
+// a direct child of the console agent; deeper levels are agents that spawned
+// their own agents. Flat list — the client nests by parentKey.
+export interface SubAgentNode {
+  key: string;
+  pid: number | null;
+  depth: number; // 1 = direct child of the console agent
+  parentKey: string | null; // null = child of the session root (console agent)
+  model: string | null;
+  prompt: string;
+  resultPreview: string | null;
+  result: string | null; // full final answer (for the detail conversation view)
+  status: "spawning" | "running" | "done" | "error";
+  startedAt: number;
+}
+
+export interface SessionSnapshot extends SessionMeta {
+  transcript: TranscriptEntry[];
+  subAgents: SubAgentNode[];
+}
+
+// ---- Server -> client websocket messages ----
+export type ServerMessage =
+  | { type: "snapshot"; sessions: SessionSnapshot[] }
+  | { type: "session_added"; session: SessionMeta }
+  | { type: "session_updated"; session: SessionMeta }
+  | { type: "session_removed"; id: string }
+  | { type: "entry"; sessionId: string; entry: TranscriptEntry }
+  | { type: "tree"; sessionId: string; subAgents: SubAgentNode[] };
+
+// ---- Client -> server websocket messages ----
+export type ClientMessage =
+  | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string }
+  | { type: "send"; sessionId: string; text: string }
+  | { type: "interrupt"; sessionId: string }
+  | { type: "close"; sessionId: string }
+  | { type: "delete"; sessionId: string };

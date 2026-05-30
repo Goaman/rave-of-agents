@@ -154,7 +154,11 @@ function runSuperAgent({ prompt, model, max_turns }) {
       try {
         const parsed = JSON.parse(out);
         const text = parsed.result ?? "(no result field)";
-        log("child_done", { childDepth: DEPTH + 1, resultPreview: String(text).slice(0, 200) });
+        log("child_done", {
+          childDepth: DEPTH + 1,
+          resultPreview: String(text).slice(0, 200),
+          result: String(text).slice(0, 8000), // full(ish) answer for the detail view
+        });
         resolve({ ok: !parsed.is_error, text: String(text) });
       } catch (e) {
         log("parse_error", { message: e.message, raw: out.slice(0, 1000) });

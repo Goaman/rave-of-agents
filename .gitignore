@@ -12,3 +12,9 @@ ehthumbs.db
 ehthumbs_vista.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# app
+node_modules/
+app/public/client.js
+.playwright-mcp/
+*.png
