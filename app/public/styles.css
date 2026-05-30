@@ -24,7 +24,20 @@ body {
 .root-shell { height: 100vh; display: flex; flex-direction: column; }
 .app, .pm-wrap { flex: 1; min-height: 0; }
 .pm-wrap { display: flex; flex-direction: column; }
-.app { display: grid; grid-template-columns: 268px 1fr; min-height: 0; }
+.app { display: grid; grid-template-columns: 268px 1fr; min-height: 0; position: relative; }
+/* Draggable divider sitting on the sidebar/main boundary. Absolutely positioned
+   so it doesn't consume a grid track; `left` tracks the live sidebar width. */
+.app-resizer {
+  position: absolute; top: 0; bottom: 0; width: 11px;
+  transform: translateX(-50%); z-index: 20; cursor: col-resize;
+  display: flex; align-items: stretch; justify-content: center;
+}
+.app-resizer::after {
+  content: ""; width: 1px; background: transparent;
+  transition: background .12s ease, width .12s ease;
+}
+.app-resizer:hover::after, body.resizing .app-resizer::after { background: var(--accent); width: 2px; }
+body.resizing { cursor: col-resize; user-select: none; }
 /* Grid children default to min-height:auto, which lets tall content (a long
    transcript) grow the whole row and scroll the page — dragging the sidebar
    along. Bounding both columns to the row height makes each scroll on its own. */

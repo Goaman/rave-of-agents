@@ -518,13 +518,58 @@ function TopNav() {
   `;
 }
 
+// Draggable divider between the sidebar and the conversation pane. The width is
+// kept in a signal (so the grid + handle position update live) and persisted to
+// localStorage, so it survives reloads.
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 620;
+const SIDEBAR_KEY = "agent-console:sidebar-w";
+
+function loadSidebarWidth(): number {
+  const v = Number(localStorage.getItem(SIDEBAR_KEY));
+  return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 268;
+}
+
+const [sidebarWidth, setSidebarWidth] = createSignal(loadSidebarWidth());
+
+function AppLayout() {
+  const beginResize = (e: PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarWidth();
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + ev.clientX - startX));
+      setSidebarWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("resizing");
+      localStorage.setItem(SIDEBAR_KEY, String(sidebarWidth()));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    document.body.classList.add("resizing");
+  };
+
+  return html`<div class="app"
+    style=${() => `grid-template-columns: ${sidebarWidth()}px 1fr`}>
+    <${Sidebar} />
+    <div class="app-resizer" title="drag to resize · double-click to reset"
+      style=${() => `left: ${sidebarWidth()}px`}
+      onPointerDown=${beginResize}
+      onDblClick=${() => {
+        setSidebarWidth(268);
+        localStorage.setItem(SIDEBAR_KEY, "268");
+      }}></div>
+    <${Conversation} />
+  </div>`;
+}
+
 function App() {
   return html`<div class="root-shell" data-component="App">
     <${TopNav} />
-    ${() =>
-      view() === "pm"
-        ? html`<${PmView} />`
-        : html`<div class="app"><${Sidebar} /><${Conversation} /></div>`}
+    ${() => (view() === "pm" ? html`<${PmView} />` : html`<${AppLayout} />`)}
     <${DialogHost} />
   </div>`;
 }
