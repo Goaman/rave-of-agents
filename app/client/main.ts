@@ -27,7 +27,7 @@ import { isCollapsed, toggleCollapse } from "./collapse.ts";
 import { createComposer } from "./composer.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { ToolGroup } from "./tool-call.ts";
-import type { Project, SessionSnapshot, SubAgentNode, Task, TranscriptEntry } from "../types.ts";
+import type { Project, SessionSnapshot, SubAgentNode, SubAgentTurn, Task, TranscriptEntry } from "../types.ts";
 
 // Recursive lineage of nested agents spawned via super_agent. Clicking a node
 // focuses that sub-agent's conversation. Rebuilt whole whenever the session's
@@ -69,9 +69,10 @@ function SubTreeImpl(nodes: SubAgentNode[], parent: string | null, sessionId: st
   </div>`;
 }
 
-// Focused view of a single sub-agent: the prompt it was given, any agents it
-// spawned, and the answer it returned. (Sub-agents run headless/one-shot, so
-// this is the full conversation available for them — input, lineage, output.)
+// Focused view of a single sub-agent: the back-and-forth it has had (its
+// spawning prompt + the user's follow-ups), any agents it spawned, and controls
+// to *interrupt* it mid-run or *talk to* it (a follow-up that resumes its
+// session with full context).
 //
 // Takes accessors rather than plain values so the detail updates in place as
 // the live node/session change, without the caller having to tear down and
@@ -80,6 +81,57 @@ function SubAgentDetail(
   nodeAcc: () => SubAgentNode | undefined,
   sessionAcc: () => SessionSnapshot | undefined,
 ) {
+  let taEl: HTMLTextAreaElement | undefined;
+  const [draft, setDraft] = createSignal("");
+
+  // Reset the follow-up draft whenever the focused sub-agent changes (this view
+  // is reused in place as the user clicks between nodes).
+  let lastKey: string | null = null;
+  createEffect(() => {
+    const k = nodeAcc()?.key ?? null;
+    if (k !== lastKey) {
+      lastKey = k;
+      setDraft("");
+      if (taEl) taEl.value = "";
+    }
+  });
+
+  const isBusy = () => {
+    const n = nodeAcc();
+    return !!n && (n.status === "running" || n.status === "spawning");
+  };
+  // We can talk to a sub-agent once it has finished a turn (so its session id is
+  // captured) and it isn't currently working.
+  const canTalk = () => {
+    const n = nodeAcc();
+    return !!n && !!n.sessionId && !isBusy();
+  };
+  // The conversation turns — fall back to a single synthetic turn for nodes
+  // restored before the `turns` field existed.
+  const turns = (): SubAgentTurn[] => {
+    const n = nodeAcc();
+    if (!n) return [];
+    if (n.turns && n.turns.length) return n.turns;
+    return [
+      {
+        prompt: n.prompt,
+        result: n.result ?? n.resultPreview ?? null,
+        status: n.status === "error" ? "error" : n.status === "done" ? "done" : "running",
+        startedAt: n.startedAt,
+      },
+    ];
+  };
+
+  const sendFollowUp = () => {
+    const n = nodeAcc();
+    const s = sessionAcc();
+    const text = draft().trim();
+    if (!n || !s || !text || !canTalk()) return;
+    actions.messageSub(s.id, n.key, text);
+    setDraft("");
+    if (taEl) taEl.value = "";
+  };
+
   return html`
     <div class="sub-detail" data-component="SubAgentDetail">
       <header class="conv-head">
@@ -98,12 +150,38 @@ function SubAgentDetail(
             return n ? `L${n.depth} · ${n.model ?? "default"}${n.pid ? ` · pid ${n.pid}` : ""}` : "";
           }}</span>
         </div>
+        <div class="head-actions">
+          ${() =>
+            isBusy() && nodeAcc()?.childPid
+              ? html`<button class="danger"
+                  title="stop this sub-agent (and anything it spawned)"
+                  onClick=${() => {
+                    const n = nodeAcc();
+                    const s = sessionAcc();
+                    if (n && s) actions.interruptSub(s.id, n.key);
+                  }}>interrupt</button>`
+              : ""}
+        </div>
       </header>
       <div class="transcript">
-        <div class="entry user">
-          <span class="who">spawned with</span>
-          <div class="text">${() => nodeAcc()?.prompt || "(no prompt)"}</div>
-        </div>
+        ${() =>
+          turns().map(
+            (t: SubAgentTurn, i: number) => html`
+              <div class="entry user">
+                <span class="who">${i === 0 ? "spawned with" : "you"}</span>
+                <div class="text">${t.prompt || "(no prompt)"}</div>
+              </div>
+              ${t.status === "running"
+                ? html`<div class="entry system">
+                    <span class="who">working…</span>
+                    <div class="text">${i === 0 ? "running" : "thinking it over…"}</div>
+                  </div>`
+                : html`<div class="entry ${t.status === "error" ? "error" : "result"}">
+                    <span class="who">${t.status === "error" ? "stopped" : "returned"}</span>
+                    <div class="text">${t.result ?? "(no result)"}</div>
+                  </div>`}
+            `,
+          )}
         ${() => {
           const n = nodeAcc();
           const s = sessionAcc();
@@ -115,19 +193,29 @@ function SubAgentDetail(
               </div>`
             : "";
         }}
-        ${() => {
-          const n = nodeAcc();
-          if (!n) return "";
-          return n.status === "done" || n.status === "error"
-            ? html`<div class="entry ${n.status === "error" ? "error" : "result"}">
-                <span class="who">returned</span>
-                <div class="text">${n.result ?? n.resultPreview ?? "(no result)"}</div>
-              </div>`
-            : html`<div class="entry system">
-                <span class="who">${n.status}</span>
-                <div class="text">working…</div>
-              </div>`;
-        }}
+      </div>
+      <div class="composer sub-composer">
+        <textarea
+          ref=${(el: HTMLTextAreaElement) => (taEl = el)}
+          rows="2"
+          placeholder=${() =>
+            isBusy()
+              ? "Interrupt this sub-agent to talk to it…"
+              : canTalk()
+                ? "Talk to this sub-agent (⌘/Ctrl+Enter) — it replies with full context…"
+                : "You can talk to this sub-agent once it finishes a turn…"}
+          disabled=${() => !canTalk()}
+          onInput=${(e: InputEvent) => setDraft((e.target as HTMLTextAreaElement).value)}
+          onKeyDown=${(e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              sendFollowUp();
+            }
+          }}></textarea>
+        <div class="composer-row" style="justify-content: flex-end">
+          <button class="primary" disabled=${() => !canTalk() || !draft().trim()}
+            onClick=${sendFollowUp}>send</button>
+        </div>
       </div>
     </div>
   `;

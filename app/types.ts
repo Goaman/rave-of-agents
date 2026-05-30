@@ -60,12 +60,22 @@ export interface SessionMeta {
   live: boolean;
 }
 
+// One request→answer exchange with a sub-agent. The first turn is the prompt it
+// was spawned with; further turns are follow-ups sent by the user, each of which
+// resumes the sub-agent's underlying `claude` session (so it keeps its context).
+export interface SubAgentTurn {
+  prompt: string;
+  result: string | null;
+  status: "running" | "done" | "error";
+  startedAt: number;
+}
+
 // A nested agent spawned (recursively) via the super_agent MCP tool. depth 1 is
 // a direct child of the console agent; deeper levels are agents that spawned
 // their own agents. Flat list — the client nests by parentKey.
 export interface SubAgentNode {
   key: string;
-  pid: number | null;
+  pid: number | null; // the sub-agent's MCP-server pid (from its server_start)
   depth: number; // 1 = direct child of the console agent
   parentKey: string | null; // null = child of the session root (console agent)
   model: string | null;
@@ -74,6 +84,18 @@ export interface SubAgentNode {
   result: string | null; // full final answer (for the detail conversation view)
   status: "spawning" | "running" | "done" | "error";
   startedAt: number;
+  // ---- control: interrupt + talk-to (see session-worker.ts) ----
+  // The UI addresses interrupt/follow-up commands at this node by its `key`.
+  // The spawned `claude` process group leader for the CURRENT turn — the pid the
+  // worker signals to interrupt this sub-agent. Null for legacy/unkillable nodes.
+  childPid: number | null;
+  // The sub-agent's `claude` session id, captured from its JSON output. Lets a
+  // follow-up message resume the SAME session (with full context).
+  sessionId: string | null;
+  // Full back-and-forth with this sub-agent. turns[0] is the spawning prompt;
+  // later entries are user follow-ups. The top-level prompt/result/status mirror
+  // the latest turn for the sidebar and backward compatibility.
+  turns: SubAgentTurn[];
 }
 
 export interface SessionSnapshot extends SessionMeta {
@@ -140,5 +162,9 @@ export type ClientMessage =
   | { type: "create"; label?: string; prompt: string; model?: string; cwd?: string; taskId?: string | null; images?: ImageAttachment[] }
   | { type: "send"; sessionId: string; text: string; images?: ImageAttachment[] }
   | { type: "interrupt"; sessionId: string }
+  // Interrupt a single nested sub-agent (and the run it is in the middle of).
+  | { type: "interrupt_sub"; sessionId: string; key: string }
+  // Send a follow-up to a nested sub-agent — resumes its session with context.
+  | { type: "send_sub"; sessionId: string; key: string; text: string }
   | { type: "close"; sessionId: string }
   | { type: "delete"; sessionId: string };

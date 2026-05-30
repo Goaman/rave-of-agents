@@ -243,6 +243,17 @@ class Handle {
     if (this.sock) writeLine(this.sock, { cmd: "interrupt" });
   }
 
+  // Interrupt / talk-to a single nested sub-agent. These go through command(),
+  // which spawns + connects a worker first if the session is dormant — so you can
+  // act on a sub-agent of a session whose worker has exited.
+  interruptSub(key: string) {
+    this.command({ cmd: "interrupt_sub", key });
+  }
+
+  sendSub(key: string, text: string) {
+    this.command({ cmd: "send_sub", key, text });
+  }
+
   close() {
     if (this.sock) writeLine(this.sock, { cmd: "close" });
   }
@@ -355,6 +366,14 @@ export class AgentManager {
 
   async interrupt(id: string) {
     this.handles.get(id)?.interrupt();
+  }
+
+  interruptSub(id: string, key: string) {
+    this.handles.get(id)?.interruptSub(key);
+  }
+
+  sendSub(id: string, key: string, text: string) {
+    this.handles.get(id)?.sendSub(key, text);
   }
 
   close(id: string) {

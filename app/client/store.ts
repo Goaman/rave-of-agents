@@ -191,6 +191,11 @@ export const actions = {
   message: (sessionId: string, text: string, images?: ImageAttachment[]) =>
     send({ type: "send", sessionId, text, images }),
   interrupt: (sessionId: string) => send({ type: "interrupt", sessionId }),
+  // Interrupt / talk-to a single nested sub-agent within a session.
+  interruptSub: (sessionId: string, key: string) =>
+    send({ type: "interrupt_sub", sessionId, key }),
+  messageSub: (sessionId: string, key: string, text: string) =>
+    send({ type: "send_sub", sessionId, key, text }),
   close: (sessionId: string) => send({ type: "close", sessionId }),
   remove: (sessionId: string) => send({ type: "delete", sessionId }),
 };

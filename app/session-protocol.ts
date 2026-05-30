@@ -23,6 +23,8 @@ import type {
 export type WorkerCommand =
   | { cmd: "send"; text: string; images?: ImageAttachment[] }
   | { cmd: "interrupt" }
+  | { cmd: "interrupt_sub"; key: string } // interrupt one nested sub-agent
+  | { cmd: "send_sub"; key: string; text: string } // talk to (resume) one sub-agent
   | { cmd: "close" } // end the agent (close the input stream) but keep files
   | { cmd: "delete" }; // stop and erase all on-disk traces, then exit
 

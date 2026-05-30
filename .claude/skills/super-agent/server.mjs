@@ -125,12 +125,19 @@ function runSuperAgent({ prompt, model, max_turns }) {
     ];
     if (model) args.push("--model", model);
 
-    log("spawn", { childDepth: DEPTH + 1, model: model || null, prompt });
-
+    // `detached: true` makes the child a process-group leader, so the console
+    // can interrupt this sub-agent (and anything it spawns) by signalling the
+    // whole group via its negative pid. We still await its exit below, so we
+    // deliberately do NOT unref() it.
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
+      detached: true,
     });
+
+    // Log the spawn (with the child's pid) so the console's lineage tree knows
+    // which process group to signal when the user interrupts this sub-agent.
+    log("spawn", { childDepth: DEPTH + 1, model: model || null, prompt, childPid: child.pid });
 
     let out = "";
     let err = "";
@@ -158,6 +165,9 @@ function runSuperAgent({ prompt, model, max_turns }) {
           childDepth: DEPTH + 1,
           resultPreview: String(text).slice(0, 200),
           result: String(text).slice(0, 8000), // full(ish) answer for the detail view
+          // The child's session id — lets the console resume (talk to) this exact
+          // sub-agent later with a follow-up message that keeps its context.
+          sessionId: parsed.session_id ?? null,
         });
         resolve({ ok: !parsed.is_error, text: String(text) });
       } catch (e) {

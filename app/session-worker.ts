@@ -17,12 +17,14 @@
 // or is deleted — i.e. only once there is no live agent left to preserve.
 
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { spawn } from "node:child_process";
 import {
   existsSync,
   openSync,
   readSync,
   closeSync,
   fstatSync,
+  statSync,
   writeFileSync,
   unlinkSync,
 } from "node:fs";
@@ -56,6 +58,9 @@ const CLAUDE_BIN =
     "/usr/local/bin/claude",
   ].find((p) => existsSync(p)) ||
   undefined;
+// A concrete executable for the directly-spawned `claude -p --resume` we use to
+// talk to a sub-agent (the SDK path above can be undefined; fall back to PATH).
+const CLAUDE_EXEC = CLAUDE_BIN || "claude";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SUPER_AGENT_SERVER =
@@ -154,6 +159,9 @@ class Worker {
     if (restored) {
       this.transcript = restored.transcript ?? [];
       this.subAgentsView = restored.subAgents ?? [];
+      // Seed the live tree with the restored lineage so a sub-agent can be
+      // interrupted or talked-to even before the session itself is resumed.
+      this.tree.hydrate(this.subAgentsView);
       // Restored = a resume: dormant until the first message arrives.
       this.meta = { ...restored, busy: false, live: false };
       for (const e of this.transcript) this.nextEntryId = Math.max(this.nextEntryId, e.id + 1);
@@ -240,10 +248,18 @@ class Worker {
     this.started = true;
     this.queue = new MessageQueue();
     if (SUPER_AGENT_SERVER) {
-      this.tree = new SuperTree();
       this.logFd = null;
-      this.logOffset = 0;
       this.logBuf = "";
+      if (resume) {
+        // Resuming: the tree was already hydrated from the persisted lineage in
+        // init(), so skip the existing log history (start tailing at its end) to
+        // avoid re-adding past spawns as duplicate nodes.
+        this.logOffset = existsSync(this.logPath) ? statSync(this.logPath).size : 0;
+      } else {
+        // Fresh session: empty tree, tail the log from the start.
+        this.tree = new SuperTree();
+        this.logOffset = 0;
+      }
       this.startTailer();
     }
     this.update({ live: true });
@@ -293,6 +309,161 @@ class Worker {
     } catch (e) {
       this.addEntry("error", `interrupt failed: ${String(e)}`);
     }
+  }
+
+  // --- sub-agent control: interrupt + talk-to ---
+
+  // Push the current lineage to clients and persist it. Used after we mutate the
+  // tree directly (follow-up turns), bypassing the log tailer.
+  private flushTree() {
+    this.subAgentsView = this.tree.list();
+    this.tree.takeDirty(); // we're broadcasting now; don't double-emit from the tailer
+    this.broadcast({ type: "tree", sessionId: this.meta.id, subAgents: this.subAgentsView });
+    this.schedulePersist();
+  }
+
+  // Interrupt one sub-agent: signal its process group. For the spawning run this
+  // kills the nested `claude` (its parent's super_agent tool then logs child_exit,
+  // which the tailer folds into the node); for a follow-up run we spawned, our own
+  // close handler finishes the turn. Killing the group also stops anything it
+  // spawned in turn.
+  private interruptSub(key: string) {
+    const node = this.tree.byKey(key);
+    if (!node) {
+      this.addEntry("error", `sub-agent ${key} not found`);
+      return;
+    }
+    const pid = node.childPid;
+    if (!pid) {
+      this.addEntry("system", "can't interrupt this sub-agent — no live process for it");
+      return;
+    }
+    const label = node.prompt ? `"${node.prompt.slice(0, 48)}${node.prompt.length > 48 ? "…" : ""}"` : key;
+    try {
+      process.kill(-pid, "SIGTERM");
+      // Escalate if it ignores the polite signal.
+      setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
+      }, 2500);
+      this.addEntry("system", `⏹ interrupted sub-agent ${label}`);
+    } catch {
+      // Not a group leader (legacy) or already dead — try the bare pid.
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      this.addEntry("system", `⏹ interrupt sent to sub-agent ${label}`);
+    }
+  }
+
+  // Talk to a sub-agent: resume its `claude` session with a follow-up message so
+  // it answers with full prior context. Runs as an independent `claude -p
+  // --resume` the worker owns (the parent agent already got its result), updating
+  // the node's turns directly.
+  private resumeSub(key: string, text: string) {
+    const node = this.tree.byKey(key);
+    if (!node) {
+      this.addEntry("error", `sub-agent ${key} not found`);
+      return;
+    }
+    if (node.status === "running" || node.status === "spawning") {
+      this.addEntry("system", "sub-agent is still working — interrupt it before talking to it");
+      return;
+    }
+    if (!node.sessionId) {
+      this.addEntry("system", "can't talk to this sub-agent — its session wasn't captured (it never finished a turn)");
+      return;
+    }
+    if (!SUPER_AGENT_SERVER) {
+      this.addEntry("error", "super-agent server unavailable; cannot resume sub-agent");
+      return;
+    }
+
+    this.tree.startTurn(key, text);
+    this.flushTree();
+
+    const mcpConfig = JSON.stringify({
+      mcpServers: {
+        superagent: {
+          type: "stdio",
+          command: NODE_BIN,
+          args: [SUPER_AGENT_SERVER],
+          env: {
+            ...process.env,
+            // Run this resumed agent at the node's own depth so anything it spawns
+            // nests one level below it, just like the original run.
+            SUPER_AGENT_DEPTH: String(node.depth),
+            SUPER_AGENT_MAX_DEPTH: MAX_DEPTH,
+            SUPER_AGENT_LOG: this.logPath,
+          },
+        },
+      },
+    });
+    const args = [
+      "-p",
+      text,
+      "--resume",
+      node.sessionId,
+      "--output-format",
+      "json",
+      "--mcp-config",
+      mcpConfig,
+      "--strict-mcp-config",
+      "--allowedTools",
+      "mcp__superagent__super_agent",
+      "--permission-mode",
+      "bypassPermissions",
+      "--max-turns",
+      "16",
+    ];
+    if (node.model) args.push("--model", node.model);
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(CLAUDE_EXEC, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: process.env,
+        cwd: this.meta.cwd, // run where the session (and the original sub-agent) runs
+        detached: true, // own process group, so interruptSub can signal it
+      });
+    } catch (e) {
+      this.tree.finishTurn(key, false, `failed to start resume: ${String((e as Error)?.message ?? e)}`);
+      this.flushTree();
+      return;
+    }
+
+    this.tree.setChildPid(key, child.pid ?? null);
+    this.flushTree();
+
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (err += d));
+    child.on("error", (e) => {
+      this.tree.finishTurn(key, false, `resume failed: ${e.message}`);
+      this.flushTree();
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        try {
+          const parsed = JSON.parse(out);
+          const txt = String(parsed.result ?? "(no result field)");
+          this.tree.finishTurn(key, !parsed.is_error, txt, parsed.session_id ?? null);
+        } catch (e) {
+          this.tree.finishTurn(key, false, `could not parse resume output: ${(e as Error).message}`);
+        }
+      } else {
+        // Non-zero exit: a user interrupt (signal) or a real failure.
+        const why = err.trim() ? err.slice(0, 800) : "(interrupted)";
+        this.tree.finishTurn(key, false, why);
+      }
+      this.flushTree();
+    });
   }
 
   // --- super-agent log tailer (nested-agent lineage) ---
@@ -457,6 +628,12 @@ class Worker {
         return;
       case "interrupt":
         this.interrupt();
+        return;
+      case "interrupt_sub":
+        this.interruptSub(c.key);
+        return;
+      case "send_sub":
+        this.resumeSub(c.key, c.text);
         return;
       case "close":
         // End the agent gracefully; runLoop's finally will shut us down.
