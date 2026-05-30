@@ -20,6 +20,7 @@ it returned).
 
 ```bash
 bun install        # first time only
+cp .env.example .env   # then fill in SUPABASE_URL + SUPABASE_KEY (sessions live in Supabase)
 bun run start      # web UI  → http://localhost:4317
 bun run tui        # terminal UI (same backend; embeds a server if none is up)
 ```
@@ -46,11 +47,15 @@ agents** — they keep running idle between turns. When the server starts again 
 scans for live worker sockets and **re-attaches** to the running agents: a
 mid-turn agent keeps streaming, and you can message it as if nothing happened.
 
-Metadata, transcript and sub-agent tree are also saved under `~/.agent-console/`
-(override with `AGENT_CONSOLE_DIR`). A session whose worker has exited (you
-`close`d it, or its turn ended and you quit) is **dormant**; sending it a message
-spawns a fresh worker that **resumes** the prior SDK session (same id, same
-context). `delete` stops the worker and forgets the session for good.
+Metadata, transcript and sub-agent tree are saved to **Supabase** (set
+`SUPABASE_URL` + `SUPABASE_KEY`, see `.env.example`) so sessions are durable and
+not tied to one machine. Host-local runtime files — worker sockets/pids and the
+per-session log tailed by the super-agent tree — still live under
+`~/.agent-console/` (override with `AGENT_CONSOLE_DIR`), since they can't be
+shared across hosts. A session whose worker has exited (you `close`d it, or its
+turn ended and you quit) is **dormant**; sending it a message spawns a fresh
+worker that **resumes** the prior SDK session (same id, same context). `delete`
+stops the worker and forgets the session for good.
 
 ## Auth
 
@@ -96,7 +101,7 @@ tui (ANSI)    ─┴─ ws ─▶ Bun server ─┤   │
                          fan-out)    │                       ├─ query() ── claude (SDK)
               outlives the server ──▶│                       ├─ MessageQueue → push
                                      │                       ├─ super-agent log → SuperTree
-                                     │                       └─ persist to ~/.agent-console
+                                     │                       └─ persist to Supabase
                                      └─ on restart: re-attach to live worker sockets
 ```
 
@@ -116,8 +121,9 @@ tui (ANSI)    ─┴─ ws ─▶ Bun server ─┤   │
   exchanged over the worker socket, plus the framing helpers.
 - **`super-tree.ts`** — pure reducer folding `spawn`/`server_start`/`child_done`
   log events into a lineage tree, stitching parent→child by depth + FIFO order.
-- **`persistence.ts`** — JSON-per-session load/save under `~/.agent-console/`,
-  plus the worker socket/pid path helpers used to find and re-attach to workers.
+- **`persistence.ts`** — Supabase-backed session load/save (one row per session
+  in the `sessions` table; transcript + sub-agent tree as `jsonb`), plus the
+  host-local worker socket/pid/log path helpers used to find and re-attach to workers.
 - **`client/`** — SolidJS via the `solid-js/html` tagged template (real
   fine-grained reactivity, bundled by Bun — no Babel/Vite).
 - **`tui.ts`** — ANSI terminal client over the same websocket. All dynamic text

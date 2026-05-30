@@ -22,5 +22,6 @@ app/public/client.js
 # local project board (per-worktree)
 .pm-data.json
 
-# secrets (Soda Straw API key, etc.)
+# local secrets (Soda Straw API key, Supabase creds, etc.)
 .env
+.env.local

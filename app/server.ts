@@ -48,7 +48,7 @@ export async function startServer(opts: { port?: number; quiet?: boolean } = {})
   }
 
   // The manager emits lifecycle/transcript/tree events; forward them verbatim.
-  const manager = new AgentManager((e: ManagerEvent) => broadcast(e as ServerMessage));
+  const manager = await AgentManager.start((e: ManagerEvent) => broadcast(e as ServerMessage));
 
   const server = Bun.serve({
     port,

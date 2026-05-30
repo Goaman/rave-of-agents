@@ -262,16 +262,23 @@ export class AgentManager {
 
   constructor(emit: Emit) {
     this.emit = emit;
-    for (const snap of loadAll()) {
-      const h = new Handle(snap, emit, (id) => this.handles.delete(id));
-      this.handles.set(snap.id, h);
+  }
+
+  // Async because the session store (Supabase) is loaded over the network. Use
+  // AgentManager.start() rather than `new AgentManager()` so callers await this.
+  static async start(emit: Emit): Promise<AgentManager> {
+    const m = new AgentManager(emit);
+    for (const snap of await loadAll()) {
+      const h = new Handle(snap, emit, (id) => m.handles.delete(id));
+      m.handles.set(snap.id, h);
       const n = Number(snap.id.match(/^s(\d+)-/)?.[1] ?? 0);
-      this.seq = Math.max(this.seq, n);
+      m.seq = Math.max(m.seq, n);
     }
     // Re-attach to any workers that outlived a previous server, in the
     // background — list() already returns the dormant snapshots immediately, and
     // a successful re-attach emits a session_snapshot that updates clients.
-    for (const h of this.handles.values()) void h.reattach();
+    for (const h of m.handles.values()) void h.reattach();
+    return m;
   }
 
   list(): SessionSnapshot[] {

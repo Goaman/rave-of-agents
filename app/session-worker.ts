@@ -38,7 +38,7 @@ import type {
 } from "./types.ts";
 import { SuperTree, type RawEvent } from "./super-tree.ts";
 import {
-  loadAll,
+  loadOne,
   logPathFor,
   pidPathFor,
   remove as removePersisted,
@@ -131,25 +131,31 @@ class Worker {
 
   constructor() {
     this.logPath = logPathFor(ID);
-    const restored = loadAll().find((s) => s.id === ID);
+    // Start from a fresh-session default; init() overrides it from storage if a
+    // snapshot exists for this id (a resume).
+    this.meta = {
+      id: ID,
+      label: arg("label") || ID,
+      model: arg("model") || null,
+      cwd: arg("cwd") || process.cwd(),
+      status: "starting",
+      sdkSessionId: null,
+      createdAt: Date.now(),
+      busy: false,
+      live: false,
+    };
+  }
+
+  // Load any persisted snapshot for this session (the store is over the network,
+  // so this is async and runs before listen()).
+  async init() {
+    const restored = await loadOne(ID);
     if (restored) {
       this.transcript = restored.transcript ?? [];
       this.subAgentsView = restored.subAgents ?? [];
       // Restored = a resume: dormant until the first message arrives.
       this.meta = { ...restored, busy: false, live: false };
       for (const e of this.transcript) this.nextEntryId = Math.max(this.nextEntryId, e.id + 1);
-    } else {
-      this.meta = {
-        id: ID,
-        label: arg("label") || ID,
-        model: arg("model") || null,
-        cwd: arg("cwd") || process.cwd(),
-        status: "starting",
-        sdkSessionId: null,
-        createdAt: Date.now(),
-        busy: false,
-        live: false,
-      };
     }
   }
 
@@ -166,7 +172,7 @@ class Worker {
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      save(this.snapshot());
+      void save(this.snapshot());
     }, 400);
   }
 
@@ -351,7 +357,7 @@ class Worker {
       // The agent has ended — there is nothing left to keep alive. Flush the
       // final state to connected servers, then exit so the session goes dormant
       // (a future message resumes it in a fresh worker).
-      this.shutdown(/* gone */ false);
+      void this.shutdown(/* gone */ false);
     }
   }
 
@@ -422,7 +428,7 @@ class Worker {
     this.server.listen(sockPath, () => {
       writeFileSync(pidPathFor(ID), String(process.pid));
       // Persist a baseline so a server that connects before any send still sees us.
-      save(this.snapshot());
+      void save(this.snapshot());
     });
   }
 
@@ -437,11 +443,11 @@ class Worker {
       case "close":
         // End the agent gracefully; runLoop's finally will shut us down.
         this.queue?.close();
-        if (!this.started) this.shutdown(false); // never ran — just exit
+        if (!this.started) void this.shutdown(false); // never ran — just exit
         return;
       case "delete":
         this.queue?.close();
-        this.shutdown(/* gone */ true);
+        void this.shutdown(/* gone */ true);
         return;
     }
   }
@@ -450,15 +456,17 @@ class Worker {
   // its on-disk traces and tell the server to forget it. `gone` false means the
   // agent merely ended (resumable): keep the snapshot on disk as dormant.
   private shutting = false;
-  private shutdown(gone: boolean) {
+  private async shutdown(gone: boolean) {
     if (this.shutting) return;
     this.shutting = true;
     this.stopTailer();
     if (this.persistTimer) clearTimeout(this.persistTimer);
 
+    // Await the storage write so the row is gone/persisted before we exit — the
+    // store is over the network and a fire-and-forget call would race the exit.
     if (gone) {
       this.broadcast({ type: "gone", id: ID });
-      removePersisted(ID);
+      await removePersisted(ID);
       try {
         unlinkSync(this.logPath);
       } catch {
@@ -466,7 +474,7 @@ class Worker {
       }
     } else {
       // Final dormant snapshot for a future resume.
-      save({ ...this.snapshot(), live: false, busy: false });
+      await save({ ...this.snapshot(), live: false, busy: false });
     }
 
     try {
@@ -486,4 +494,5 @@ class Worker {
 }
 
 const worker = new Worker();
+await worker.init();
 worker.listen();
