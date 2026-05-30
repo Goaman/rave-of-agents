@@ -79,6 +79,65 @@ const TOOL = {
   },
 };
 
+// Batch variant: spawns MANY nested agents in a SINGLE call, concurrently.
+// This is the reliable way to get parallel fan-out — one tool call fires all
+// children at once (Promise.all) instead of relying on the caller to dispatch
+// several `super_agent` calls in parallel (which Claude Code may serialize).
+const PARALLEL_TOOL = {
+  name: "super_agent_parallel",
+  description:
+    "Spawn MULTIPLE nested autonomous Claude agents AT ONCE, running them in " +
+    "parallel, and return all their answers together. This is the correct tool " +
+    "whenever you want sub-agents to run concurrently: a single call launches " +
+    "every task simultaneously (instantaneous fan-out), instead of issuing " +
+    "several separate `super_agent` calls. Each spawned agent also has the " +
+    "`super_agent`/`super_agent_parallel` tools, so it can fan out further. " +
+    "Give each task a complete, self-contained prompt (children do not see this " +
+    "conversation).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      tasks: {
+        type: "array",
+        minItems: 1,
+        description:
+          "List of agents to spawn in parallel. Each item is either a plain " +
+          "string prompt, or an object { prompt, model?, max_turns? } for " +
+          "per-agent overrides.",
+        items: {
+          oneOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                prompt: { type: "string" },
+                model: { type: "string" },
+                max_turns: { type: "number" },
+              },
+              required: ["prompt"],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      model: {
+        type: "string",
+        description:
+          "Optional default model alias ('opus'|'sonnet'|'haiku') applied to " +
+          "every task that doesn't specify its own.",
+      },
+      max_turns: {
+        type: "number",
+        description:
+          "Optional default max agentic turns applied to every task that " +
+          "doesn't specify its own (default 16).",
+      },
+    },
+    required: ["tasks"],
+    additionalProperties: false,
+  },
+};
+
 function childMcpConfig() {
   // Hand the child the same server, with an incremented depth.
   return JSON.stringify({
@@ -117,7 +176,7 @@ function runSuperAgent({ prompt, model, max_turns }) {
       childMcpConfig(),
       "--strict-mcp-config", // ignore every other MCP source; only our server
       "--allowedTools",
-      "mcp__superagent__super_agent",
+      "mcp__superagent__super_agent,mcp__superagent__super_agent_parallel",
       "--permission-mode",
       "bypassPermissions",
       "--max-turns",
@@ -178,6 +237,42 @@ function runSuperAgent({ prompt, model, max_turns }) {
   });
 }
 
+// Normalize a tasks[] item (string | {prompt,...}) into a spawn spec, applying
+// the batch-level defaults for model / max_turns when the item omits them.
+function normalizeTask(item, defaults) {
+  const spec = typeof item === "string" ? { prompt: item } : { ...item };
+  if (spec.model === undefined && defaults.model !== undefined) spec.model = defaults.model;
+  if (spec.max_turns === undefined && defaults.max_turns !== undefined)
+    spec.max_turns = defaults.max_turns;
+  return spec;
+}
+
+// Spawn many nested agents concurrently and return a combined, labeled answer.
+async function runSuperAgentParallel({ tasks, model, max_turns }) {
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return { ok: false, text: "super_agent_parallel requires a non-empty `tasks` array." };
+  }
+  const specs = tasks.map((t) => normalizeTask(t, { model, max_turns }));
+  for (const s of specs) {
+    if (!s.prompt || typeof s.prompt !== "string") {
+      return { ok: false, text: "Every task must have a string `prompt`." };
+    }
+  }
+
+  log("parallel_spawn", { count: specs.length });
+
+  // Promise.all => every child is spawned immediately, then we await them all.
+  const results = await Promise.all(specs.map((s) => runSuperAgent(s)));
+
+  const allOk = results.every((r) => r.ok);
+  const text = results
+    .map((r, i) => `=== agent ${i + 1}/${results.length} (${r.ok ? "ok" : "error"}) ===\n${r.text}`)
+    .join("\n\n");
+
+  log("parallel_done", { count: results.length, allOk });
+  return { ok: allOk, text };
+}
+
 // --- minimal MCP stdio server (newline-delimited JSON-RPC 2.0) -------------
 
 function send(msg) {
@@ -213,25 +308,34 @@ async function handle(msg) {
       return;
 
     case "tools/list":
-      reply(id, { tools: [TOOL] });
+      reply(id, { tools: [TOOL, PARALLEL_TOOL] });
       return;
 
     case "tools/call": {
       const name = params?.name;
       const argsIn = params?.arguments || {};
-      if (name !== "super_agent") {
-        replyError(id, -32602, `Unknown tool: ${name}`);
+
+      if (name === "super_agent") {
+        if (!argsIn.prompt || typeof argsIn.prompt !== "string") {
+          replyError(id, -32602, "Missing required string argument: prompt");
+          return;
+        }
+        const { ok, text } = await runSuperAgent(argsIn);
+        reply(id, { content: [{ type: "text", text }], isError: !ok });
         return;
       }
-      if (!argsIn.prompt || typeof argsIn.prompt !== "string") {
-        replyError(id, -32602, "Missing required string argument: prompt");
+
+      if (name === "super_agent_parallel") {
+        if (!Array.isArray(argsIn.tasks) || argsIn.tasks.length === 0) {
+          replyError(id, -32602, "Missing required non-empty array argument: tasks");
+          return;
+        }
+        const { ok, text } = await runSuperAgentParallel(argsIn);
+        reply(id, { content: [{ type: "text", text }], isError: !ok });
         return;
       }
-      const { ok, text } = await runSuperAgent(argsIn);
-      reply(id, {
-        content: [{ type: "text", text }],
-        isError: !ok,
-      });
+
+      replyError(id, -32602, `Unknown tool: ${name}`);
       return;
     }
 

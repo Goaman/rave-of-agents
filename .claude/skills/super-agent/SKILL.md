@@ -33,17 +33,56 @@ main session
   └─ super_agent ──> claude (L1)
                         └─ super_agent ──> claude (L2)
                                               └─ super_agent ──> claude (L3) ...
+
+# parallel fan-out (one super_agent_parallel call per level):
+main session
+  └─ super_agent_parallel ──┬─> claude (L1-a) ──> super_agent_parallel ──┬─> claude (L2)
+                            │                                            └─> claude (L2)
+                            └─> claude (L1-b) ──> super_agent_parallel ──┬─> claude (L2)
+                                                                         └─> claude (L2)
 ```
 
-## The tool
+## The tools
 
-`mcp__superagent__super_agent`
+### `mcp__superagent__super_agent` — spawn ONE nested agent
 
 | arg | required | meaning |
 |-----|----------|---------|
 | `prompt` | yes | Complete, self-contained task for the nested agent. To force further nesting, tell it to call `super_agent` itself. |
 | `model` | no | Model alias: `opus`, `sonnet`, `haiku`. Defaults to the nested process's configured default. Pass `sonnet`/`haiku` to control cost on deep chains. |
 | `max_turns` | no | Max agentic turns for the nested agent (default 16). |
+
+### `mcp__superagent__super_agent_parallel` — spawn MANY at once, in parallel
+
+| arg | required | meaning |
+|-----|----------|---------|
+| `tasks` | yes | Array of agents to spawn **concurrently**. Each item is either a plain string prompt, or an object `{ prompt, model?, max_turns? }` for per-agent overrides. |
+| `model` | no | Default model alias applied to every task that doesn't set its own. |
+| `max_turns` | no | Default max turns applied to every task that doesn't set its own. |
+
+**Always use `super_agent_parallel` when you want sub-agents to run in
+parallel.** A single call fans out *all* tasks simultaneously via `Promise.all`,
+so they spawn instantaneously together. Do **not** emit several separate
+`super_agent` calls hoping they run concurrently — the host may serialize calls
+to the same MCP server, so that approach can run them one-at-a-time.
+
+The combined result lists each agent's answer, labeled `=== agent i/N (ok|error) ===`.
+
+Every spawned agent also has **both** tools, so a parallel child can itself call
+`super_agent_parallel` to fan out the next level — that is how you get parallel
+fan-out at every depth.
+
+Example — "2 agents in parallel, each spawning 2 more in parallel, all say pong, use haiku":
+
+```
+super_agent_parallel({
+  model: "haiku",
+  tasks: [
+    "Call super_agent_parallel with two haiku tasks, each saying exactly 'pong'. Return both replies.",
+    "Call super_agent_parallel with two haiku tasks, each saying exactly 'pong'. Return both replies.",
+  ]
+})
+```
 
 ## When to use it
 
