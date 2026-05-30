@@ -297,15 +297,16 @@ export async function deleteTask(tid: string): Promise<boolean> {
 
 // ---- session <-> task ------------------------------------------------------
 
-// Project that auto-created session tasks are filed under when an agent is
-// launched without picking a task. Reused across sessions (found by name) and
-// created on first use, so ad-hoc sessions don't pollute the user's projects.
+// Project used to file auto-created session tasks under when the board is
+// empty and we have to create one. Normally tasks land in the existing main
+// project, so this is only a last-resort fallback.
 const SESSIONS_PROJECT_NAME = "Agent Sessions";
 
 // Resolve the task a new session belongs to. A picked task is returned as-is
-// (no Linear round-trip); with none picked we auto-create one under the
-// "Agent Sessions" project so every session is still tracked on the board — the
-// user no longer has to choose a task by hand.
+// (no Linear round-trip); with none picked we auto-create one under the main
+// project — the first/primary project on the board — so the session is still
+// tracked without spinning up a separate project. Only when the board has no
+// projects at all do we create a fallback project to hang the task off of.
 export async function ensureSessionTask(input: {
   taskId?: string | null;
   title?: string;
@@ -315,9 +316,11 @@ export async function ensureSessionTask(input: {
   const picked = (input.taskId ?? "").trim();
   if (picked) return picked;
 
+  // getState() returns projects sorted by createdAt ascending, so the first
+  // entry is the oldest — the user's main project.
   const { projects } = await getState();
   const project =
-    projects.find((p) => p.name === SESSIONS_PROJECT_NAME) ??
+    projects[0] ??
     (await createProject({
       name: SESSIONS_PROJECT_NAME,
       description: "Tasks auto-created for agent sessions launched without picking one.",
