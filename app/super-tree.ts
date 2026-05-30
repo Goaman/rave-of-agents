@@ -22,11 +22,17 @@ export interface RawEvent {
   prompt?: string;
   resultPreview?: string;
   result?: string;
+  // Per-spawn correlation id minted by the parent's MCP server. Present on
+  // spawn/server_start/child_done/error events so siblings spawned in parallel
+  // (which start and finish out of order) attribute to the right node by id
+  // rather than by FIFO order. Absent in legacy logs → we fall back to FIFO.
+  cid?: string;
 }
 
 export class SuperTree {
   private nodes: SubAgentNode[] = [];
   private pidToKey = new Map<number, string>(); // bound pid -> node key
+  private cidToNode = new Map<string, SubAgentNode>(); // spawn cid -> node
   private seq = 0;
   private dirty = false;
 
@@ -51,7 +57,7 @@ export class SuperTree {
     switch (e.event) {
       case "spawn": {
         const parentKey = this.keyForPid(e.pid, e.depth);
-        this.nodes.push({
+        const node: SubAgentNode = {
           key: `n${++this.seq}`,
           pid: null,
           depth: (e.childDepth ?? e.depth + 1),
@@ -62,17 +68,23 @@ export class SuperTree {
           result: null,
           status: "spawning",
           startedAt: Date.parse(e.ts ?? "") || Date.now(),
-        });
+        };
+        this.nodes.push(node);
+        if (e.cid) this.cidToNode.set(e.cid, node);
         this.dirty = true;
         return;
       }
 
       case "server_start": {
         if (e.depth === 0) return; // the session's own root server, not a sub-agent
-        // Bind to the oldest still-unbound node expecting this depth.
-        const node = this.nodes.find(
-          (n) => n.pid === null && n.depth === e.depth && n.status === "spawning",
-        );
+        // Prefer exact cid match (the child reports the cid its parent assigned),
+        // so parallel siblings bind to the right node regardless of start order.
+        const node =
+          (e.cid && this.cidToNode.get(e.cid)) ||
+          // Legacy/no-cid fallback: oldest still-unbound node at this depth.
+          this.nodes.find(
+            (n) => n.pid === null && n.depth === e.depth && n.status === "spawning",
+          );
         if (node) {
           node.pid = e.pid;
           node.status = "running";
@@ -83,8 +95,7 @@ export class SuperTree {
       }
 
       case "child_done": {
-        const parentKey = this.keyForPid(e.pid, e.depth);
-        const node = this.unresolvedChild(parentKey, e.childDepth ?? e.depth + 1);
+        const node = this.resolveChild(e);
         if (node) {
           node.status = "done";
           node.resultPreview = e.resultPreview ?? null;
@@ -98,8 +109,7 @@ export class SuperTree {
       case "spawn_error":
       case "depth_limit":
       case "parse_error": {
-        const parentKey = this.keyForPid(e.pid, e.depth);
-        const node = this.unresolvedChild(parentKey, e.childDepth ?? e.depth + 1);
+        const node = this.resolveChild(e);
         if (node) {
           node.status = "error";
           node.resultPreview = node.resultPreview ?? `(${e.event})`;
@@ -108,6 +118,18 @@ export class SuperTree {
         return;
       }
     }
+  }
+
+  // Resolve the node a completion/error event refers to. Exact cid match first
+  // (correct under parallel spawning); otherwise fall back to the oldest
+  // unfinished child of the emitting parent at the child depth (legacy logs).
+  private resolveChild(e: RawEvent): SubAgentNode | undefined {
+    if (e.cid) {
+      const byCid = this.cidToNode.get(e.cid);
+      if (byCid) return byCid;
+    }
+    const parentKey = this.keyForPid(e.pid, e.depth);
+    return this.unresolvedChild(parentKey, e.childDepth ?? e.depth + 1);
   }
 
   // Oldest child of `parentKey` at `depth` not yet finished.

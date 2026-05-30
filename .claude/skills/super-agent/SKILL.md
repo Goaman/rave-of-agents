@@ -45,6 +45,28 @@ main session
 | `model` | no | Model alias: `opus`, `sonnet`, `haiku`. Defaults to the nested process's configured default. Pass `sonnet`/`haiku` to control cost on deep chains. |
 | `max_turns` | no | Max agentic turns for the nested agent (default 16). |
 
+## Parallelism — spawn concurrently when possible
+
+Independent subtasks should be spawned **in parallel**, not one after another.
+Issue several `super_agent` calls in a **single turn** (multiple tool_use blocks)
+and they run concurrently — wall-clock time becomes the slowest branch, not the
+sum of all branches. The MCP server handles each call on its own and never
+serializes them, and each spawn carries a correlation id so the lineage tree
+attributes every branch (and its sub-tree) correctly even when siblings finish
+out of order.
+
+- **Parallel** (do this): three unrelated directions to explore, N files to
+  analyze independently, a fan-out of "research X / research Y / research Z".
+  Fire all the `super_agent` calls in one message.
+- **Sequential** (only when forced): when one branch's result is an input to the
+  next. Chain those, but still parallelize anything independent within each step.
+
+```
+one turn ──┬─ super_agent (branch A) ─┐
+           ├─ super_agent (branch B) ─┤── all run at once, results return together
+           └─ super_agent (branch C) ─┘
+```
+
 ## When to use it
 
 - A subtask is large enough to warrant its own delegation tree (it will itself break

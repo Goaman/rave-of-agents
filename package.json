@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run app/server.ts",
     "dev": "bun run app/server.ts",
-    "tui": "bun run app/tui.ts"
+    "tui": "bun run app/tui.ts",
+    "test": "bun run app/super-tree.test.ts && node .claude/skills/super-agent/test/parallel-spawn.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.158",
