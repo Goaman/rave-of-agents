@@ -25,8 +25,6 @@ const PROTOCOL_VERSION = "2024-11-05";
 
 const DEPTH = parseInt(process.env.SUPER_AGENT_DEPTH || "0", 10);
 const MAX_DEPTH = parseInt(process.env.SUPER_AGENT_MAX_DEPTH || "5", 10);
-// The headless agent binary. Overridable so tests can inject a fake `claude`.
-const CLAUDE_BIN = process.env.SUPER_AGENT_CLAUDE_BIN || "claude";
 const LOG_FILE =
   process.env.SUPER_AGENT_LOG || path.join(homedir(), ".claude", "super-agent.log");
 
@@ -57,10 +55,7 @@ const TOOL = {
     "agent ALSO has the `super_agent` tool, so it can spawn its own nested " +
     "agents — enabling deep multi-level delegation. Give it a complete, " +
     "self-contained prompt (it does not see this conversation). It returns only " +
-    "its final text answer. PARALLELISM: when you have multiple INDEPENDENT " +
-    "subtasks, call super_agent multiple times in a SINGLE message — the spawns " +
-    "run concurrently and you get all results back together. Only chain calls " +
-    "sequentially when one subtask's output feeds the next.",
+    "its final text answer.",
   inputSchema: {
     type: "object",
     properties: {
@@ -84,19 +79,8 @@ const TOOL = {
   },
 };
 
-// Per-call correlation id. With parallel spawning, sibling agents at the same
-// depth start and finish in arbitrary order, so the lineage builder cannot stitch
-// spawn→server_start→child_done by FIFO order alone. We mint a globally-unique cid
-// per spawn (pid-scoped counter), log it on every event for this call, AND hand it
-// to the child via env so the child's own `server_start` carries the same cid. That
-// lets the tree correlate each event to the exact node regardless of timing.
-let callSeq = 0;
-function nextCid() {
-  return `${process.pid}.${++callSeq}`;
-}
-
-function childMcpConfig(cid) {
-  // Hand the child the same server, with an incremented depth and its cid.
+function childMcpConfig() {
+  // Hand the child the same server, with an incremented depth.
   return JSON.stringify({
     mcpServers: {
       superagent: {
@@ -107,7 +91,6 @@ function childMcpConfig(cid) {
           SUPER_AGENT_DEPTH: String(DEPTH + 1),
           SUPER_AGENT_MAX_DEPTH: String(MAX_DEPTH),
           SUPER_AGENT_LOG: LOG_FILE,
-          SUPER_AGENT_CID: cid,
         },
       },
     },
@@ -116,9 +99,8 @@ function childMcpConfig(cid) {
 
 function runSuperAgent({ prompt, model, max_turns }) {
   return new Promise((resolve) => {
-    const cid = nextCid();
     if (DEPTH >= MAX_DEPTH) {
-      log("depth_limit", { cid, childDepth: DEPTH + 1, max: MAX_DEPTH });
+      log("depth_limit", { max: MAX_DEPTH });
       resolve({
         ok: false,
         text: `super_agent depth limit reached (${MAX_DEPTH}); refusing to nest further.`,
@@ -132,7 +114,7 @@ function runSuperAgent({ prompt, model, max_turns }) {
       "--output-format",
       "json",
       "--mcp-config",
-      childMcpConfig(cid),
+      childMcpConfig(),
       "--strict-mcp-config", // ignore every other MCP source; only our server
       "--allowedTools",
       "mcp__superagent__super_agent",
@@ -143,9 +125,9 @@ function runSuperAgent({ prompt, model, max_turns }) {
     ];
     if (model) args.push("--model", model);
 
-    log("spawn", { cid, childDepth: DEPTH + 1, model: model || null, prompt });
+    log("spawn", { childDepth: DEPTH + 1, model: model || null, prompt });
 
-    const child = spawn(CLAUDE_BIN, args, {
+    const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     });
@@ -156,13 +138,13 @@ function runSuperAgent({ prompt, model, max_turns }) {
     child.stderr.on("data", (d) => (err += d));
 
     child.on("error", (e) => {
-      log("spawn_error", { cid, childDepth: DEPTH + 1, message: e.message });
+      log("spawn_error", { message: e.message });
       resolve({ ok: false, text: `Failed to spawn nested claude: ${e.message}` });
     });
 
     child.on("close", (code) => {
       if (code !== 0) {
-        log("child_exit", { cid, childDepth: DEPTH + 1, code, stderr: err.slice(0, 2000) });
+        log("child_exit", { code, stderr: err.slice(0, 2000) });
         resolve({
           ok: false,
           text: `Nested claude exited with code ${code}.\nstderr:\n${err.slice(0, 2000)}`,
@@ -173,14 +155,13 @@ function runSuperAgent({ prompt, model, max_turns }) {
         const parsed = JSON.parse(out);
         const text = parsed.result ?? "(no result field)";
         log("child_done", {
-          cid,
           childDepth: DEPTH + 1,
           resultPreview: String(text).slice(0, 200),
           result: String(text).slice(0, 8000), // full(ish) answer for the detail view
         });
         resolve({ ok: !parsed.is_error, text: String(text) });
       } catch (e) {
-        log("parse_error", { cid, childDepth: DEPTH + 1, message: e.message, raw: out.slice(0, 1000) });
+        log("parse_error", { message: e.message, raw: out.slice(0, 1000) });
         resolve({ ok: false, text: `Could not parse nested claude output: ${e.message}` });
       }
     });
@@ -272,5 +253,4 @@ process.stdin.on("data", (chunk) => {
 });
 
 process.stdin.on("end", () => process.exit(0));
-// cid is the id our PARENT assigned this child (absent for the depth-0 root).
-log("server_start", { cid: process.env.SUPER_AGENT_CID || null, serverPath: SERVER_PATH });
+log("server_start", { serverPath: SERVER_PATH });
