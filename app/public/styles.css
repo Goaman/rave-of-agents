@@ -234,3 +234,36 @@ button.danger:hover { border-color: #ff7a8a; }
 .tstatus.done { background: #6ea8fe; }
 .tstatus.error { background: #ff7a8a; }
 @keyframes pulse { 50% { opacity: .35; } }
+
+/* ---- modal dialogs (confirm / error) ---- */
+/* The host wrapper stays out of layout; each queued dialog draws its own overlay. */
+.dialog-layer { display: contents; }
+.dialog-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(7, 9, 13, .62); backdrop-filter: blur(2px);
+  animation: dialog-fade .12s ease;
+}
+.dialog {
+  width: min(440px, 100%); background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .55); animation: dialog-pop .14s ease;
+}
+.dialog.error { border-color: #5a2a30; }
+.dialog-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.dialog.error .dialog-title { color: #ff9aa6; }
+.dialog-message { color: var(--text); font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.dialog-detail {
+  margin: 12px 0 0; max-height: 180px; overflow: auto; padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--dim);
+  white-space: pre-wrap; word-break: break-word;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.dialog-confirm.danger {
+  background: linear-gradient(135deg, #ff8a98, #ff5d6e); border: none;
+  color: #2a0d11; font-weight: 600;
+}
+.dialog-confirm.danger:hover { filter: brightness(1.06); }
+@keyframes dialog-fade { from { opacity: 0; } }
+@keyframes dialog-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
